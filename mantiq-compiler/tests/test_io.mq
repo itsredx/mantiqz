@@ -1,0 +1,9 @@
+import std.io
+
+fn main():
+    write(stdout, "Writing to stdout!\n")
+    write(stderr, "Writing to stderr!\n")
+    write(stdout, "Please type something: ")
+    let input = read(stdin, 100)
+    write(stdout, "Received: ")
+    write(stdout, input)

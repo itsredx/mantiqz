@@ -1,0 +1,9 @@
+# Ignore all files in this directory (the compiler root)
+/*
+
+# Except the build configurations and code directories
+!/build.zig
+!/build.zig.zon
+!/src/
+!/tests/
+!/.gitignore

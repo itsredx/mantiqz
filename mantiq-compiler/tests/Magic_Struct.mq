@@ -1,0 +1,58 @@
+struct Point:
+    public var x as i32
+    public var y as i32
+
+    public fn __init__(self as ptr[Point], x as i32, y as i32):
+        (deref self).x = x
+        (deref self).y = y
+
+    public fn __del__(self as ptr[Point]):
+        (deref self).x = 0
+        (deref self).y = 0
+
+    public fn __add__(self as Point, other as Point) -> Point:
+        return Point(self.x + other.x, self.y + other.y)
+
+    public fn __neg__(self as Point) -> Point:
+        return Point(-self.x, -self.y)
+
+    public fn __getitem__(self as Point, idx as i32) -> i32:
+        if idx == 0:
+            return self.x
+        return self.y
+
+    public fn __setitem__(self as ptr[Point], idx as i32, val as i32):
+        if idx == 0:
+            (deref self).x = val
+        else:
+            (deref self).y = val
+
+fn main():
+    // Test __init__
+    let mut p1 as Point = Point(10, 20)
+    print(p1.x)
+    print(p1.y)
+
+    // Test operators
+    let p2 as Point = Point(5, 15)
+    let p3 as Point = p1 + p2
+    print(p3.x)
+    print(p3.y)
+
+    let p4 as Point = -p1
+    print(p4.x)
+    print(p4.y)
+
+    // Test __getitem__ and __setitem__
+    print(p1[0])
+    print(p1[1])
+
+    p1[0] = 100
+    p1[1] = 200
+    print(p1[0])
+    print(p1[1])
+
+    // Test __del__
+    p1.__del__()
+    print(p1.x)
+    print(p1.y)

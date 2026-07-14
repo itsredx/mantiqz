@@ -1,0 +1,573 @@
+// ============================================================================
+// std/text.nz
+// Nizam standard library module for text processing, lexing, and
+// Unicode encoding/decoding.
+//
+// This module is organised into several sections:
+//
+//   1. Lexer Helpers    – character classification predicates useful
+//                         for writing tokenisers and parsers.
+//   2. Codepoint        – a (value, byte_length) pair representing a
+//                         single decoded Unicode code point.
+//   3. UTF-8 Helpers    – functions for encoding, decoding, validation,
+//                         and counting of UTF-8 byte sequences.
+//   4. ASCII Helpers    – fast-path ASCII-only variants that skip the
+//                         multi-byte logic.
+//   5. UTF-16 Helpers   – surrogate-aware UTF-16 decoding/encoding.
+//   6. UTF-32 Helpers   – trivial pass-through for UTF-32 (fixed-width).
+//
+// All encoding/decoding functions follow the Unicode 15.0 standard.
+// ============================================================================
+
+// ============================================================================
+// Section 1 — Lexer Helpers
+//
+// These predicates test individual ASCII characters and are typically
+// used by lexers/parsers to classify input tokens.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// is_digit(c) -> bool
+//
+// Return True if `c` is an ASCII decimal digit ('0' – '9', ASCII 48–57).
+// ---------------------------------------------------------------------------
+fn is_digit(c as char) as bool:
+    let b as u8 = c to u8
+    return b >= 48 to u8 and b <= 57 to u8 // '0'..'9'
+
+// ---------------------------------------------------------------------------
+// is_alpha(c) -> bool
+//
+// Return True if `c` is an ASCII letter or underscore:
+//   'A'–'Z' (65–90), 'a'–'z' (97–122), or '_' (95).
+// ---------------------------------------------------------------------------
+fn is_alpha(c as char) as bool:
+    let b as u8 = c to u8
+    return (b >= 65 to u8 and b <= 90 to u8) or (b >= 97 to u8 and b <= 122 to u8) or (b == 95 to u8) // 'A'..'Z', 'a'..'z', '_'
+
+// ---------------------------------------------------------------------------
+// is_alphanumeric(c) -> bool
+//
+// Return True if `c` is an ASCII letter, underscore, or decimal digit.
+// Equivalent to is_alpha(c) or is_digit(c).
+// ---------------------------------------------------------------------------
+fn is_alphanumeric(c as char) as bool:
+    return is_alpha(c) or is_digit(c)
+
+// ---------------------------------------------------------------------------
+// is_whitespace(c) -> bool
+//
+// Return True if `c` is an ASCII whitespace character:
+//   - space         (32)
+//   - tab           (9)
+//   - newline       (10)
+//   - carriage return (13)
+// ---------------------------------------------------------------------------
+fn is_whitespace(c as char) as bool:
+    let b as u8 = c to u8
+    return b == 32 to u8 or b == 9 to u8 or b == 10 to u8 or b == 13 to u8 // space, tab, newline, carriage return
+
+// ---------------------------------------------------------------------------
+// is_hex_digit(c) -> bool
+//
+// Return True if `c` is an ASCII hexadecimal digit:
+//   '0'–'9', 'A'–'F', 'a'–'f'.
+// ---------------------------------------------------------------------------
+fn is_hex_digit(c as char) as bool:
+    let b as u8 = c to u8
+    return (b >= 48 to u8 and b <= 57 to u8) or (b >= 65 to u8 and b <= 70 to u8) or (b >= 97 to u8 and b <= 102 to u8) // '0'..'9', 'A'..'F', 'a'..'f'
+
+// ---------------------------------------------------------------------------
+// is_octal_digit(c) -> bool
+//
+// Return True if `c` is an ASCII octal digit ('0' – '7', ASCII 48–55).
+// ---------------------------------------------------------------------------
+fn is_octal_digit(c as char) as bool:
+    let b as u8 = c to u8
+    return b >= 48 to u8 and b <= 55 to u8 // '0'..'7'
+
+// ============================================================================
+// Section 2 — Codepoint
+//
+// A decoded Unicode code point together with its byte/word length in
+// the source encoding.
+//
+// Fields:
+//   value  – the 21-bit Unicode scalar value (0 – 0x10FFFF)
+//   length – number of code units consumed from the source encoding
+//            (bytes for UTF-8, 16-bit words for UTF-16, 32-bit words
+//            for UTF-32)
+// ============================================================================
+struct Codepoint:
+    public var value as u32
+    public var length as usize
+
+    public fn __init__(self as ptr[Codepoint], value as u32, length as usize):
+        (deref self).value = value
+        (deref self).length = length
+
+// ============================================================================
+// Section 3 — UTF-8 Helpers
+//
+// UTF-8 encodes each Unicode code point as 1–4 bytes:
+//   U+0000 – U+007F   : 1 byte  (0xxxxxxx)
+//   U+0080 – U+07FF   : 2 bytes (110xxxxx 10xxxxxx)
+//   U+0800 – U+FFFF   : 3 bytes (1110xxxx 10xxxxxx 10xxxxxx)
+//   U+10000 – U+10FFFF: 4 bytes (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx)
+//
+// Continuation bytes always have the pattern 10xxxxxx.
+// Overlong sequences and surrogate halves are rejected by the validator.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// utf8_char_length(first_byte) -> usize
+//
+// Determine the number of bytes in a UTF-8 character given its leading byte.
+//
+// Leading-byte patterns:
+//   0xxxxxxx -> 1 byte
+//   110xxxxx -> 2 bytes
+//   1110xxxx -> 3 bytes
+//   11110xxx -> 4 bytes
+//
+// Returns 1 for invalid leading bytes as a fallback (the caller is expected
+// to validate separately).
+// ---------------------------------------------------------------------------
+fn utf8_char_length(first_byte as u8) as usize:
+    if (first_byte & 128 to u8) == 0 to u8:
+        return 1 to usize
+    if (first_byte & 224 to u8) == 192 to u8:
+        return 2 to usize
+    if (first_byte & 240 to u8) == 224 to u8:
+        return 3 to usize
+    if (first_byte & 248 to u8) == 240 to u8:
+        return 4 to usize
+    return 1 to usize // fallback/invalid
+
+// ---------------------------------------------------------------------------
+// utf8_decode(bytes, offset) -> Codepoint
+//
+// Decode a single UTF-8 code point starting at bytes[offset].
+//
+// Returns a Codepoint containing:
+//   - value:  the decoded Unicode scalar value (0 – 0x10FFFF)
+//   - length: the number of bytes consumed (1–4)
+//
+// Assumes the input is valid UTF-8 (no bounds or continuation-byte checks
+// are performed here; use utf8_validate for that).
+// ---------------------------------------------------------------------------
+fn utf8_decode(bytes as ptr[u8], offset as usize) as Codepoint:
+    let first as u8 = bytes[offset]
+    let len as usize = utf8_char_length(first)
+    
+    if len == 1:
+        return Codepoint(value=first to u32, length=1)
+    if len == 2:
+        let b1 as u32 = (first & 31 to u8) to u32
+        let b2 as u32 = (bytes[offset + 1] & 63 to u8) to u32
+        let val as u32 = (b1 << 6) | b2
+        return Codepoint(value=val, length=2)
+    if len == 3:
+        let b1 as u32 = (first & 15 to u8) to u32
+        let b2 as u32 = (bytes[offset + 1] & 63 to u8) to u32
+        let b3 as u32 = (bytes[offset + 2] & 63 to u8) to u32
+        let val as u32 = (b1 << 12) | (b2 << 6) | b3
+        return Codepoint(value=val, length=3)
+    if len == 4:
+        let b1 as u32 = (first & 7 to u8) to u32
+        let b2 as u32 = (bytes[offset + 1] & 63 to u8) to u32
+        let b3 as u32 = (bytes[offset + 2] & 63 to u8) to u32
+        let b4 as u32 = (bytes[offset + 3] & 63 to u8) to u32
+        let val as u32 = (b1 << 18) | (b2 << 12) | (b3 << 6) | b4
+        return Codepoint(value=val, length=4)
+        
+    return Codepoint(value=0 to u32, length=1)
+
+// ---------------------------------------------------------------------------
+// utf8_encode(codepoint, out_bytes) -> usize
+//
+// Encode a Unicode scalar value `codepoint` (0 – 0x10FFFF) into one to
+// four bytes stored at `out_bytes`.
+//
+// Returns the number of bytes written (1–4), or 0 if the code point is
+// outside the valid Unicode range (> 0x10FFFF).
+//
+// Note: surrogate code points (U+D800 – U+DFFF) are encoded as 3-byte
+// sequences; the caller should prevent this at a higher level if desired.
+// ---------------------------------------------------------------------------
+fn utf8_encode(codepoint as u32, out_bytes as ptr[u8]) as usize:
+    if codepoint <= 127 to u32:
+        out_bytes[0] = codepoint to u8
+        return 1 to usize
+    if codepoint <= 2047 to u32:
+        out_bytes[0] = (192 to u32 | (codepoint >> 6)) to u8
+        out_bytes[1] = (128 to u32 | (codepoint & 63 to u32)) to u8
+        return 2 to usize
+    if codepoint <= 65535 to u32:
+        out_bytes[0] = (224 to u32 | (codepoint >> 12)) to u8
+        out_bytes[1] = (128 to u32 | ((codepoint >> 6) & 63 to u32)) to u8
+        out_bytes[2] = (128 to u32 | (codepoint & 63 to u32)) to u8
+        return 3 to usize
+    if codepoint <= 1114111 to u32:
+        out_bytes[0] = (240 to u32 | (codepoint >> 18)) to u8
+        out_bytes[1] = (128 to u32 | ((codepoint >> 12) & 63 to u32)) to u8
+        out_bytes[2] = (128 to u32 | ((codepoint >> 6) & 63 to u32)) to u8
+        out_bytes[3] = (128 to u32 | (codepoint & 63 to u32)) to u8
+        return 4 to usize
+    return 0 to usize
+
+// ---------------------------------------------------------------------------
+// utf8_validate(bytes, len) -> bool
+//
+// Validate that the first `len` bytes of `bytes` form a well-formed
+// UTF-8 sequence according to Unicode 15.0.
+//
+// Checks performed:
+//   - Each leading byte correctly predicts the sequence length.
+//   - All continuation bytes have the pattern 10xxxxxx.
+//   - No overlong sequences (e.g. 0xC0 0x80 for U+0000).
+//   - No surrogate code points (U+D800 – U+DFFF) encoded in UTF-8.
+//   - Code points do not exceed U+10FFFF.
+//   - The sequence does not extend beyond the buffer boundary.
+//
+// Returns True if the entire buffer is valid UTF-8, False otherwise.
+// ---------------------------------------------------------------------------
+fn utf8_validate(bytes as ptr[u8], len as usize) as bool:
+    let mut i as usize = 0
+    while i < len:
+        let first as u8 = bytes[i]
+        let char_len as usize = utf8_char_length(first)
+        
+        if i + char_len > len:
+            return False
+            
+        // Validate continuation bytes and bounds
+        if char_len == 1:
+            // 0xxxxxxx – single byte: must have MSB clear
+            if (first & 128 to u8) != 0 to u8:
+                return False
+        if char_len == 2:
+            // 110xxxxx 10xxxxxx
+            let b2 as u8 = bytes[i + 1]
+            if (b2 & 192 to u8) != 128 to u8:
+                return False
+            let val as u32 = ((first & 31 to u8) to u32 << 6) | (b2 & 63 to u8) to u32
+            if val < 128 to u32: // overlong: would fit in 1 byte
+                return False
+        if char_len == 3:
+            // 1110xxxx 10xxxxxx 10xxxxxx
+            let b2 as u8 = bytes[i + 1]
+            let b3 as u8 = bytes[i + 2]
+            if (b2 & 192 to u8) != 128 to u8 or (b3 & 192 to u8) != 128 to u8:
+                return False
+            let val as u32 = ((first & 15 to u8) to u32 << 12) | ((b2 & 63 to u8) to u32 << 6) | (b3 & 63 to u8) to u32
+            if val < 2048 to u32: // overlong: would fit in 2 bytes
+                return False
+            if val >= 55296 to u32 and val <= 57343 to u32: // surrogate range
+                return False
+        if char_len == 4:
+            // 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+            let b2 as u8 = bytes[i + 1]
+            let b3 as u8 = bytes[i + 2]
+            let b4 as u8 = bytes[i + 3]
+            if (b2 & 192 to u8) != 128 to u8 or (b3 & 192 to u8) != 128 to u8 or (b4 & 192 to u8) != 128 to u8:
+                return False
+            let val as u32 = ((first & 7 to u8) to u32 << 18) | ((b2 & 63 to u8) to u32 << 12) | ((b3 & 63 to u8) to u32 << 6) | (b4 & 63 to u8) to u32
+            if val < 65536 to u32 or val > 1114111 to u32: // overlong or out of bounds
+                return False
+                
+        i = i + char_len
+    return True
+
+// ---------------------------------------------------------------------------
+// utf8_count_codepoints(bytes, len) -> usize
+//
+// Count the number of Unicode code points in the first `len` bytes of
+// a UTF-8 buffer without performing full validation.
+//
+// If an invalid leading byte or truncated sequence is encountered, the
+// remaining bytes are each counted as one code point (graceful degradation).
+//
+// For a validated buffer use utf8_validate first, then this function;
+// otherwise the count may include malformed sequences.
+// ---------------------------------------------------------------------------
+fn utf8_count_codepoints(bytes as ptr[u8], len as usize) as usize:
+    let mut count as usize = 0
+    let mut i as usize = 0
+    while i < len:
+        let first as u8 = bytes[i]
+        let char_len as usize = utf8_char_length(first)
+        if i + char_len > len:
+            count = count + 1
+            break
+        count = count + 1
+        i = i + char_len
+    return count
+
+// ============================================================================
+// Section 4 — ASCII Helpers
+//
+// Fast-path implementations that assume (and enforce) pure ASCII input.
+// These are simpler and faster than their UTF-8 counterparts because
+// ASCII is a fixed-width encoding (1 byte per character, MSB always 0).
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// ascii_char_length(first_byte) -> usize
+//
+// ASCII is single-byte; every byte has length 1.
+// ---------------------------------------------------------------------------
+fn ascii_char_length(first_byte as u8) as usize:
+    return 1 to usize
+
+// ---------------------------------------------------------------------------
+// ascii_decode(bytes, offset) -> Codepoint
+//
+// Decode a single ASCII byte at bytes[offset] as a Codepoint.
+// The byte value is the same as the Unicode scalar value (U+0000 – U+007F).
+// ---------------------------------------------------------------------------
+fn ascii_decode(bytes as ptr[u8], offset as usize) as Codepoint:
+    let first as u8 = bytes[offset]
+    return Codepoint(value=first to u32, length=1 to usize)
+
+// ---------------------------------------------------------------------------
+// ascii_encode(codepoint, out_bytes) -> usize
+//
+// Encode a Unicode scalar value as ASCII.
+//
+// Returns 1 if the code point is in the ASCII range (≤ 127), 0 otherwise.
+// ---------------------------------------------------------------------------
+fn ascii_encode(codepoint as u32, out_bytes as ptr[u8]) as usize:
+    if codepoint <= 127 to u32:
+        out_bytes[0] = codepoint to u8
+        return 1 to usize
+    return 0 to usize
+
+// ---------------------------------------------------------------------------
+// ascii_validate(bytes, len) -> bool
+//
+// Verify that every byte in the range [0, len) has its most significant
+// bit clear (i.e. all bytes are in the ASCII range 0x00 – 0x7F).
+//
+// Returns True if the buffer is valid ASCII, False otherwise.
+// ---------------------------------------------------------------------------
+fn ascii_validate(bytes as ptr[u8], len as usize) as bool:
+    let mut i as usize = 0 to usize
+    while i < len:
+        if (bytes[i] & 128 to u8) != 0 to u8:
+            return False
+        i = i + 1 to usize
+    return True
+
+// ---------------------------------------------------------------------------
+// ascii_count_codepoints(bytes, len) -> usize
+//
+// For ASCII, every byte is exactly one code point, so the count is simply
+// the byte length.
+// ---------------------------------------------------------------------------
+fn ascii_count_codepoints(bytes as ptr[u8], len as usize) as usize:
+    return len
+
+// ============================================================================
+// Section 5 — UTF-16 Helpers
+//
+// UTF-16 encodes code points as either one or two 16-bit code units:
+//   U+0000 – U+D7FF, U+E000 – U+FFFF  -> 1 unit (BMP)
+//   U+10000 – U+10FFFF                 -> 2 units (surrogate pair)
+//
+// Surrogate halves:
+//   High surrogates: U+D800 – U+DBFF
+//   Low surrogates:  U+DC00 – U+DFFF
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// utf16_char_length(first_code_unit) -> usize
+//
+// Determine the number of 16-bit code units for a UTF-16 character given
+// its first code unit.
+//
+// Returns 2 if `first_code_unit` is a high surrogate (U+D800 – U+DBFF),
+// indicating a surrogate pair; otherwise returns 1.
+// ---------------------------------------------------------------------------
+fn utf16_char_length(first_code_unit as u16) as usize:
+    if first_code_unit >= 55296 to u16 and first_code_unit <= 56319 to u16: // high surrogate
+        return 2 to usize
+    return 1 to usize
+
+// ---------------------------------------------------------------------------
+// utf16_decode(words, offset) -> Codepoint
+//
+// Decode a single UTF-16 code point starting at words[offset].
+//
+// Handles both BMP code points (1 unit) and supplementary code points
+// encoded as surrogate pairs (2 units).
+//
+// Assumes the input is valid UTF-16.
+// ---------------------------------------------------------------------------
+fn utf16_decode(words as ptr[u16], offset as usize) as Codepoint:
+    let first as u16 = words[offset]
+    if first >= 55296 to u16 and first <= 56319 to u16:
+        let high as u32 = (first - 55296 to u16) to u32
+        let low as u32 = (words[offset + 1 to usize] - 56320 to u16) to u32
+        let val as u32 = (high << 10) + low + 65536 to u32
+        return Codepoint(value=val, length=2 to usize)
+    return Codepoint(value=first to u32, length=1 to usize)
+
+// ---------------------------------------------------------------------------
+// utf16_encode(codepoint, out_words) -> usize
+//
+// Encode a Unicode scalar value `codepoint` into one or two 16-bit code
+// units stored at `out_words`.
+//
+// Returns the number of code units written (1 or 2).
+//
+// BMP code points (≤ 0xFFFF) are written directly.
+// Supplementary code points are encoded as a surrogate pair.
+// ---------------------------------------------------------------------------
+fn utf16_encode(codepoint as u32, out_words as ptr[u16]) as usize:
+    if codepoint <= 65535 to u32:
+        out_words[0] = codepoint to u16
+        return 1 to usize
+    else:
+        let cp_prime as u32 = codepoint - 65536 to u32
+        out_words[0] = (55296 to u32 | (cp_prime >> 10)) to u16
+        out_words[1] = (56320 to u32 | (cp_prime & 1023 to u32)) to u16
+        return 2 to usize
+
+// ---------------------------------------------------------------------------
+// utf16_validate(words, len) -> bool
+//
+// Validate a UTF-16 sequence of `len` code units.
+//
+// Checks:
+//   - High surrogates must be followed by a low surrogate.
+//   - Low surrogates must not appear without a preceding high surrogate.
+//
+// Returns True if the sequence is valid UTF-16.
+// ---------------------------------------------------------------------------
+fn utf16_validate(words as ptr[u16], len as usize) as bool:
+    let mut i as usize = 0 to usize
+    while i < len:
+        let w1 as u16 = words[i]
+        if w1 >= 55296 to u16 and w1 <= 56319 to u16: // high surrogate
+            if i + 1 to usize >= len:
+                return False
+            let w2 as u16 = words[i + 1 to usize]
+            if w2 < 56320 to u16 or w2 > 57343 to u16: // not a low surrogate
+                return False
+            i = i + 2 to usize
+        elif w1 >= 56320 to u16 and w1 <= 57343 to u16: // unexpected low surrogate
+            return False
+        else:
+            i = i + 1 to usize
+    return True
+
+// ---------------------------------------------------------------------------
+// utf16_count_codepoints(words, len) -> usize
+//
+// Count the number of Unicode code points in a UTF-16 sequence of `len`
+// code units.  Surrogate pairs count as one code point.
+//
+// This is a length (character count) operation, not a byte count.
+// ---------------------------------------------------------------------------
+fn utf16_count_codepoints(words as ptr[u16], len as usize) as usize:
+    let mut count as usize = 0 to usize
+    let mut i as usize = 0 to usize
+    while i < len:
+        let w as u16 = words[i]
+        if w >= 55296 to u16 and w <= 56319 to u16:
+            i = i + 2 to usize
+        else:
+            i = i + 1 to usize
+        count = count + 1 to usize
+    return count
+
+// ============================================================================
+// Section 6 — UTF-32 Helpers
+//
+// UTF-32 is a fixed-width encoding: every Unicode code point is stored
+// as a single 32-bit integer.  Decoding, encoding, and counting are
+// trivial, but validation must reject values outside [0, 0x10FFFF] and
+// surrogate code points.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// utf32_char_length(first_code_unit) -> usize
+//
+// UTF-32 is always 1 code unit per character.
+// ---------------------------------------------------------------------------
+fn utf32_char_length(first_code_unit as u32) as usize:
+    return 1 to usize
+
+// ---------------------------------------------------------------------------
+// utf32_decode(words, offset) -> Codepoint
+//
+// Decode a single UTF-32 code point.  This is simply a read + wrap.
+// ---------------------------------------------------------------------------
+fn utf32_decode(words as ptr[u32], offset as usize) as Codepoint:
+    let val as u32 = words[offset]
+    return Codepoint(value=val, length=1 to usize)
+
+// ---------------------------------------------------------------------------
+// utf32_encode(codepoint, out_words) -> usize
+//
+// Encode a Unicode scalar value as a single UTF-32 code unit.
+// Always writes exactly 1 word and returns 1.
+// ---------------------------------------------------------------------------
+fn utf32_encode(codepoint as u32, out_words as ptr[u32]) as usize:
+    out_words[0] = codepoint
+    return 1 to usize
+
+// ---------------------------------------------------------------------------
+// utf32_validate(words, len) -> bool
+//
+// Validate a UTF-32 sequence of `len` code units.
+//
+// Checks:
+//   - No value exceeds 0x10FFFF (the maximum Unicode code point).
+//   - No value falls in the surrogate range (U+D800 – U+DFFF).
+//
+// Returns True if the sequence is valid UTF-32.
+// ---------------------------------------------------------------------------
+fn utf32_validate(words as ptr[u32], len as usize) as bool:
+    let mut i as usize = 0 to usize
+    while i < len:
+        let val as u32 = words[i]
+        if val > 1114111 to u32: // > 0x10FFFF
+            return False
+        if val >= 55296 to u32 and val <= 57343 to u32: // surrogate range
+            return False
+        i = i + 1 to usize
+    return True
+
+// ---------------------------------------------------------------------------
+// utf32_count_codepoints(words, len) -> usize
+//
+// For UTF-32, every code unit is exactly one code point.
+// ---------------------------------------------------------------------------
+fn utf32_count_codepoints(words as ptr[u32], len as usize) as usize:
+    return len
+
+// ============================================================================
+// Module-level notes:
+//
+// Character vs byte:
+//   The term "character" in this module refers to a Unicode code point,
+//   not a grapheme cluster.  Some visible "characters" (e.g. emoji with
+//   ZWJ sequences or combining marks) consist of multiple code points
+//   and are not handled here.
+//
+// Normalisation forms (NFC, NFD, NFKC, NFKD):
+//   Not yet implemented.  The current functions operate on raw code
+//   points without normalisation.
+//
+// BOM handling:
+//   No byte-order-mark detection is performed.  The caller must strip
+//   or interpret BOMs as needed.
+//
+// Error handling strategy:
+//   Decoding functions assume valid input for performance.
+//   Use the *_validate functions first if the input source is untrusted.
+//   Encoding functions silently return 0 for invalid code points
+//   (> 0x10FFFF) instead of producing garbage.
+// ============================================================================

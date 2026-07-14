@@ -1,0 +1,8 @@
+macro define_x():
+    let x = 42
+    std.io.println(x)
+    
+fn main():
+    let x = 10
+    define_x!()
+    std.io.println(x) // 10, not shadowed by macro

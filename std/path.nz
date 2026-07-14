@@ -1,0 +1,386 @@
+// ============================================================================
+// std/path.nz
+// Nizam standard library module for cross-platform path manipulation.
+//
+// This module provides functions for working with file-system paths:
+//   - isabs      – test whether a path is absolute
+//   - join       – concatenate two path components
+//   - dirname    – return the parent directory portion of a path
+//   - basename   – return the final component of a path
+//   - exists_ref – check whether a path exists on disk
+//
+// Platform support:
+//   The module detects the host OS via std.sys.os() and adapts separator
+//   handling accordingly:
+//     - Unix-like (Linux, macOS, *BSD):  '/' is the only separator.
+//     - Windows:  both '/' and '\' are accepted as separators; drive
+//       letters (C:\) and UNC paths (\\server\share) are recognised.
+//
+// All functions operate on Nizam String values and their internal byte
+// representations.  Strings are assumed to be valid UTF-8 on all platforms.
+// ============================================================================
+
+// --- Imports ----------------------------------------------------------------
+// make:           allocate a heap buffer (used by make_from_slice)
+// String, StringBuilder, memcpy:  core string types and raw memory copy
+// exists:         std.fs file-existence check for exists_ref()
+// os:             returns the current operating system name ("windows", "linux", etc.)
+from std.mem import make
+from std.string import String, StringBuilder, memcpy
+from std.fs import exists
+from std.sys import os
+
+// ---------------------------------------------------------------------------
+// Helper: is_windows() -> bool
+//
+// Determine whether the host platform is Windows by querying the OS name.
+// This is used throughout the module to conditionally enable Windows-specific
+// path handling (backslash separators, drive letters, UNC paths).
+// ---------------------------------------------------------------------------
+fn is_windows() as bool:
+    return os() == "windows"
+
+// ---------------------------------------------------------------------------
+// Helper: is_sep(c) -> bool
+//
+// Return True if byte `c` is a path separator for the current platform.
+//
+// On all platforms, '/' (ASCII 47) is a separator.
+// On Windows, '\' (ASCII 92) is also a separator.
+// ---------------------------------------------------------------------------
+fn is_sep(c as u8) as bool:
+    if c == 47 to u8: // '/' is ASCII 47
+        return True
+    if is_windows():
+        if c == 92 to u8: // '\' is ASCII 92
+            return True
+    return False
+
+// ---------------------------------------------------------------------------
+// Helper: sep() -> cstr
+//
+// Return the preferred path separator for the current platform as a C string.
+//
+//   Windows  -> "\\"
+//   Everyone -> "/"
+// ---------------------------------------------------------------------------
+fn sep() as cstr:
+    if is_windows():
+        return "\\" to cstr
+    return "/" to cstr
+
+// ---------------------------------------------------------------------------
+// Helper: is_letter(c) -> bool
+//
+// Return True if byte `c` is an ASCII letter ('A'-'Z' or 'a'-'z').
+//
+// Used on Windows to validate drive letters (e.g. the 'C' in "C:\").
+// ---------------------------------------------------------------------------
+fn is_letter(c as u8) as bool:
+    if (c >= 65 to u8 and c <= 90 to u8) or (c >= 97 to u8 and c <= 122 to u8):
+        return True
+    return False
+
+// ============================================================================
+// Internal: make_from_slice(bytes, len) -> String
+//
+// Create a new String by copying `len` bytes from `bytes`.
+// The result is null-terminated.
+//
+// This is the core building-block used by dirname_ref and basename_ref
+// to produce sub-string results without modifying the original input.
+// ============================================================================
+fn make_from_slice(bytes as ptr[u8], len as usize) as String:
+    let cap as usize = len + 1
+    let d as ptr[u8] = make(cap) to ptr[u8]
+    memcpy(d to ptr, bytes to ptr, len)
+    d[len] = 0 to u8
+    return String(data=d, len=len, capacity=cap)
+
+// ============================================================================
+// isabs_ref(path) -> bool
+//
+// Determine whether the given path is absolute according to the rules of
+// the current platform.
+//
+// Unix rules:
+//   A path is absolute if it starts with '/'.
+//
+// Windows rules:
+//   A path is absolute if it:
+//     - starts with '/' or '\', OR
+//     - matches a drive-letter pattern:  X:\...  or X:/...  where X is a
+//       letter, OR
+//     - is a UNC path starting with "\\" or "//".
+// ============================================================================
+fn isabs_ref(path as ptr[String]) as bool:
+    let len as usize = (deref path).len
+    if len == 0 to usize:
+        return False
+    if (deref path).data[0] == 47 to u8: // '/'
+        return True
+    if is_windows():
+        if (deref path).data[0] == 92 to u8: // '\'
+            return True
+        if len >= 3 to usize:
+            if (deref path).data[1] == 58 to u8: // ':'
+                if is_letter((deref path).data[0]):
+                    let c2 as u8 = (deref path).data[2]
+                    if c2 == 47 to u8 or c2 == 92 to u8:
+                        return True
+        // UNC path: starts with two separators
+        if len >= 2 to usize:
+            let c0 as u8 = (deref path).data[0]
+            let c1 as u8 = (deref path).data[1]
+            if (c0 == 47 to u8 or c0 == 92 to u8) and (c1 == 47 to u8 or c1 == 92 to u8):
+                return True
+    return False
+
+// ---------------------------------------------------------------------------
+// Convenience wrapper: isabs(path) -> bool
+//
+// Calls isabs_ref on a value-typed String by taking its reference.
+// ---------------------------------------------------------------------------
+fn isabs(path as String) as bool:
+    return isabs_ref(ref path)
+
+// ============================================================================
+// exists_ref(path) -> bool
+//
+// Check whether the file-system object at the given path exists.
+//
+// Delegates to std.fs.exists() by reconstructing a fresh String from the
+// referenced path's fields.  This indirection is needed because exists()
+// takes a value-type String.
+// ============================================================================
+fn exists_ref(path as ptr[String]) as bool:
+    return exists(String(data=(deref path).data, len=(deref path).len, capacity=(deref path).capacity))
+
+// ============================================================================
+// join_ref(p1, p2) -> String
+//
+// Concatenate two path components intelligently:
+//
+//   - If p2 is absolute, return p2 as-is (ignoring p1).
+//   - If p1 is empty, return p2.
+//   - If p2 is empty, return p1 (appending a trailing separator if p1 does
+//     not already end with one).
+//   - Otherwise, join p1 and p2 with the platform separator.
+//
+// The result is a newly allocated String; the caller must deinit it.
+// ============================================================================
+fn join_ref(p1 as ptr[String], p2 as ptr[String]) as String:
+    if isabs_ref(p2):
+        return String((deref p2).data to cstr)
+
+    if (deref p1).len == 0 to usize:
+        return String((deref p2).data to cstr)
+
+    let mut sb as StringBuilder = StringBuilder.make_builder()
+    sb.append_builder((deref p1).data to cstr)
+
+    if (deref p2).len == 0 to usize:
+        if not is_sep((deref p1).data[(deref p1).len - 1]):
+            sb.append_builder(sep())
+        let res as String = sb.builder_to_string()
+        sb.deinit_builder()
+        return res
+
+    if is_sep((deref p1).data[(deref p1).len - 1]):
+        sb.append_builder((deref p2).data to cstr)
+    else:
+        sb.append_builder(sep())
+        sb.append_builder((deref p2).data to cstr)
+
+    let res as String = sb.builder_to_string()
+    sb.deinit_builder()
+    return res
+
+// ---------------------------------------------------------------------------
+// Convenience wrapper: join(p1, p2) -> String
+// ---------------------------------------------------------------------------
+fn join(p1 as String, p2 as String) as String:
+    return join_ref(ref p1, ref p2)
+
+// ============================================================================
+// dirname_ref(path) -> String
+//
+// Return the parent directory portion of `path`, similar to POSIX dirname(1).
+//
+// The algorithm works from right to left:
+//   1. Strip trailing separators.
+//   2. Find the last remaining separator.
+//   3. Strip trailing separators before that separator.
+//   4. Return everything up to (and including) the separator before the
+//      last component.
+//
+// Edge cases:
+//   - Empty path         -> "."
+//   - Root "/"           -> "/"
+//   - "."                -> "."
+//   - "foo"              -> "."
+//   - "/foo"             -> "/"
+//   - "/foo/bar/"        -> "/foo"
+//   - Windows "C:\"      -> "C:\"    (preserves drive root)
+//   - Windows "\\server\share\path" -> "\\server\share"
+//
+// The result is a newly allocated String; caller must deinit it.
+// ============================================================================
+fn dirname_ref(path as ptr[String]) as String:
+    let len as usize = (deref path).len
+    if len == 0 to usize:
+        return String("." to cstr)
+
+    let mut prefix_len as usize = 0 to usize
+    if is_windows():
+        if len >= 2 to usize and (deref path).data[1] == 58 to u8 and is_letter((deref path).data[0]):
+            if len >= 3 to usize and is_sep((deref path).data[2]):
+                prefix_len = 3 to usize
+            else:
+                prefix_len = 2 to usize
+        elif len >= 2 to usize and is_sep((deref path).data[0]) and is_sep((deref path).data[1]):
+            let mut sep_count as i64 = 0 to i64
+            let mut i as usize = 2 to usize
+            while i < len and sep_count < 2 to i64:
+                if is_sep((deref path).data[i]):
+                    sep_count = sep_count + 1 to i64
+                i = i + 1 to usize
+            prefix_len = i
+
+    if prefix_len >= len:
+        return String((deref path).data to cstr)
+
+    let mut end_idx as i64 = len to i64 - 1
+    while end_idx >= prefix_len to i64 and is_sep((deref path).data[end_idx]):
+        end_idx = end_idx - 1
+
+    if end_idx < prefix_len to i64:
+        if prefix_len > 0 to usize:
+            return make_from_slice((deref path).data, prefix_len)
+        else:
+            if len > 0 to usize and is_sep((deref path).data[0]):
+                return String(sep())
+            else:
+                return String("." to cstr)
+
+    let mut slash_idx as i64 = end_idx
+    while slash_idx >= prefix_len to i64 and not is_sep((deref path).data[slash_idx]):
+        slash_idx = slash_idx - 1
+
+    if slash_idx < prefix_len to i64:
+        if prefix_len > 0 to usize:
+            return make_from_slice((deref path).data, prefix_len)
+        else:
+            return String("." to cstr)
+
+    let mut dir_end as i64 = slash_idx - 1
+    while dir_end >= prefix_len to i64 and is_sep((deref path).data[dir_end]):
+        dir_end = dir_end - 1
+
+    if dir_end < prefix_len to i64:
+        if prefix_len > 0 to usize:
+            return make_from_slice((deref path).data, prefix_len)
+        else:
+            return String(sep())
+    else:
+        return make_from_slice((deref path).data, (dir_end + 1) to usize)
+
+// ---------------------------------------------------------------------------
+// Convenience wrapper: dirname(path) -> String
+// ---------------------------------------------------------------------------
+fn dirname(path as String) as String:
+    return dirname_ref(ref path)
+
+// ============================================================================
+// basename_ref(path) -> String
+//
+// Return the final (leaf) component of `path`, similar to POSIX basename(1).
+//
+// The algorithm:
+//   1. Strip trailing separators.
+//   2. Find the last remaining separator.
+//   3. Return everything after that separator.
+//
+// Edge cases:
+//   - Empty path         -> ""
+//   - Root "/"           -> "/"
+//   - "."                -> ""
+//   - "foo"              -> "foo"
+//   - "/foo/bar"         -> "bar"
+//   - "/foo/bar/"        -> "bar"
+//   - Windows "C:\"      -> ""       (drive root)
+//   - Windows "\\server\share" -> "" (UNC root)
+//
+// The result is a newly allocated String; caller must deinit it.
+// ============================================================================
+fn basename_ref(path as ptr[String]) as String:
+    let len as usize = (deref path).len
+    if len == 0 to usize:
+        return String("" to cstr)
+
+    let mut prefix_len as usize = 0 to usize
+    if is_windows():
+        if len >= 2 to usize and (deref path).data[1] == 58 to u8 and is_letter((deref path).data[0]):
+            if len >= 3 to usize and is_sep((deref path).data[2]):
+                prefix_len = 3 to usize
+            else:
+                prefix_len = 2 to usize
+        elif len >= 2 to usize and is_sep((deref path).data[0]) and is_sep((deref path).data[1]):
+            let mut sep_count as i64 = 0 to i64
+            let mut i as usize = 2 to usize
+            while i < len and sep_count < 2 to i64:
+                if is_sep((deref path).data[i]):
+                    sep_count = sep_count + 1 to i64
+                i = i + 1 to usize
+            prefix_len = i
+
+    let mut end_idx as i64 = len to i64 - 1
+    while end_idx >= prefix_len to i64 and is_sep((deref path).data[end_idx]):
+        end_idx = end_idx - 1
+
+    if end_idx < prefix_len to i64:
+        if prefix_len > 0 to usize:
+            return String("" to cstr)
+        else:
+            if len > 0 to usize and is_sep((deref path).data[0]):
+                return String(sep())
+            else:
+                return String("" to cstr)
+
+    let mut slash_idx as i64 = end_idx
+    while slash_idx >= prefix_len to i64 and not is_sep((deref path).data[slash_idx]):
+        slash_idx = slash_idx - 1
+
+    if slash_idx < prefix_len to i64:
+        let start_ptr as ptr[u8] = ref (deref path).data[prefix_len]
+        return make_from_slice(start_ptr, (end_idx - prefix_len to i64 + 1) to usize)
+    else:
+        let start_ptr as ptr[u8] = ref (deref path).data[slash_idx + 1]
+        return make_from_slice(start_ptr, (end_idx - slash_idx) to usize)
+
+// ---------------------------------------------------------------------------
+// Convenience wrapper: basename(path) -> String
+// ---------------------------------------------------------------------------
+fn basename(path as String) as String:
+    return basename_ref(ref path)
+
+// ============================================================================
+// Module-level notes:
+//
+// Memory:
+//   All functions that return a String allocate a fresh heap buffer.
+//   The caller must deinit() every returned String to avoid leaks.
+//
+// Normalisation:
+//   This module does NOT normalise paths (e.g. it does not resolve ".."
+//   or "." components, nor does it collapse duplicate separators).
+//   Normalisation is left to a higher-level layer.
+//
+// Symlinks:
+//   exists_ref checks the file-system directly, so it follows symlinks
+//   (it delegates to std.fs.exists).
+//
+// Case sensitivity:
+//   Path comparison is byte-for-byte; no case folding is performed,
+//   even on case-insensitive file systems (Windows).
+// ============================================================================

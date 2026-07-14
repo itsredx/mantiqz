@@ -1,0 +1,7 @@
+fn make_point[T](val as T) -> T:
+    let x as T = val
+    return x
+
+fn main():
+    let p = make_point[String]("hello")
+    print(p)

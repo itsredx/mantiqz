@@ -1,0 +1,57 @@
+class Vector2:
+    x as i32
+    y as i32
+
+    public fn __init__(mut self as Vector2, x as i32, y as i32):
+        self.x = x
+        self.y = y
+
+    public fn __add__(self as Vector2, other as Vector2) -> Vector2:
+        return Vector2(self.x + other.x, self.y + other.y)
+
+    public fn __neg__(self as Vector2) -> Vector2:
+        return Vector2(-self.x, -self.y)
+
+    public fn __getitem__(self as Vector2, key as i32) -> i32:
+        if key == 0:
+            return self.x
+        return self.y
+
+    public fn __setitem__(mut self as Vector2, key as i32, value as i32):
+        if key == 0:
+            self.x = value
+        else:
+            self.y = value
+
+    public fn __call__(self as Vector2, factor as i32) -> Vector2:
+        return Vector2(self.x * factor, self.y * factor)
+
+    public fn __str__(self as Vector2) -> String:
+        return "Vector2(addition successful)"
+
+fn main():
+    let v1 = Vector2(10, 20)
+    let v2 = Vector2(5, -5)
+    let v3 = v1 + v2
+    print(v3)
+    
+    // Test __neg__
+    let v4 = -v1
+    print(v4.x) // Should be -10
+    print(v4.y) // Should be -20
+    
+    // Test __getitem__
+    print(v1[0]) // Should be 10
+    print(v1[1]) // Should be 20
+    
+    // Test __setitem__
+    let mut v5 = Vector2(3, 4)
+    v5[0] = 30
+    v5[1] = 40
+    print(v5[0]) // Should be 30
+    print(v5[1]) // Should be 40
+    
+    // Test __call__
+    let v6 = v1(2)
+    print(v6.x) // Should be 20
+    print(v6.y) // Should be 40

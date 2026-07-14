@@ -1,0 +1,36 @@
+// test_std_string.mq
+from std.string import String, StringBuilder
+import std.io
+
+fn main():
+    // Test basic string creation
+    let mut s1 = String("Hello ")
+    let s2 = String("World")
+
+    // Verify lengths
+    print(s1.len)
+    print(s2.len)
+
+    // Test subscript bracket indexing
+    print(s1[0])
+    print(s2[0])
+
+    // Test string concatenation
+    s1.append(ref s2)
+    print(s1.len)
+
+    // Test StringBuilder
+    let mut sb = StringBuilder()
+    sb.append("StringBuilder ")
+    sb.append("works!")
+    
+    let s3 = sb.to_string()
+    print(s3.len)
+
+    // Cleanup memory
+    s1.__del__()
+    s2.__del__()
+    s3.__del__()
+    sb.__del__()
+
+    print("Success")

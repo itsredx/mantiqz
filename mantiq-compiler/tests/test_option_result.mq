@@ -1,0 +1,11 @@
+from std.option import Option, Some, Empty
+from std.result import Result, Ok, Err
+import std.io
+
+fn main():
+    let opt as Option[i32] = Some(42)
+    let empty_opt as Option[i32] = Empty
+    let res as Result[i32, i32] = Ok(100)
+    let err_res as Result[i32, i32] = Err(1)
+
+    print("Success")

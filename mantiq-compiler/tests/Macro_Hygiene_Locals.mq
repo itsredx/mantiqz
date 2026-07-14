@@ -1,0 +1,12 @@
+macro swap(a, b):
+    let temp = a
+    a = b
+    b = temp
+
+fn main():
+    let temp = 100
+    let y = 200
+    swap!(temp, y)
+    // If hygiene works, `let temp = a` in the macro doesn't collide with `let temp = 100`
+    std.io.println(temp) // 200
+    std.io.println(y)    // 100

@@ -1,0 +1,18 @@
+import std.fs
+import std.io
+
+fn main():
+    let path = "test_run.txt"
+    let fd = open(path, "w")
+    write(fd, "Nizam filesystem is working perfectly!\n")
+    close(fd)
+
+    let exist_ok = exists(path)
+    print("Exists: ", exist_ok, "\n")
+
+    let fd_in = open(path, "r")
+    let contents = read(fd_in, 100)
+    close(fd_in)
+
+    write(stdout, "File contents: ")
+    write(stdout, contents)

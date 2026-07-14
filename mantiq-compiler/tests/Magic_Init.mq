@@ -1,0 +1,12 @@
+class Circle:
+    radius as i32
+    area as i32
+
+    public fn __init__(mut self as Circle, r as i32):
+        self.radius = r
+        self.area = r * r * 3
+
+fn main():
+    let c = Circle(10)
+    print(c.radius)
+    print(c.area)

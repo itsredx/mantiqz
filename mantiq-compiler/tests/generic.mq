@@ -1,0 +1,1 @@
+fn calc[T, U](x as T) -> T: pass

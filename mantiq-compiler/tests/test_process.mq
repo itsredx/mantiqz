@@ -1,0 +1,8 @@
+import std.process
+import std.io
+
+fn main():
+    let my_args = args()
+    print("Program name: ")
+    println(my_args[0])
+    exit(0)

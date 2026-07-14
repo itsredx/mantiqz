@@ -1,0 +1,36 @@
+{
+  "name": "tree-sitter-pplus",
+  "version": "1.0.0",
+  "description": "Mantiq grammar for tree-sitter",
+  "main": "bindings/node",
+  "keywords": [
+    "parser",
+    "lexer",
+    "tree-sitter",
+    "pplus"
+  ],
+  "files": [
+    "grammar.js",
+    "binding.gyp",
+    "prebuilds/**",
+    "bindings/node/*",
+    "queries/*",
+    "src/**"
+  ],
+  "dependencies": {
+    "nan": "^2.18.0"
+  },
+  "devDependencies": {
+    "node-addon-api": "^8.7.0",
+    "tree-sitter-cli": "^0.26.7"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.mantiq",
+      "file-types": [
+        "mq"
+      ],
+      "highlights": "queries/highlights.scm"
+    }
+  ]
+}

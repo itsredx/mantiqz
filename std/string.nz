@@ -1,0 +1,269 @@
+// ============================================================================
+// std/string.nz
+// Nizam standard library module for String and StringBuilder
+//
+// This module provides two primary types for working with text:
+//   - String:    An immutable(ish), heap-allocated, null-terminated byte string
+//                with explicit length and capacity tracking.
+//   - StringBuilder: A mutable, growable buffer for incrementally building
+//                    strings with amortized O(1) append operations.
+//
+// Both types own their underlying heap buffers and must be deinitialized
+// to avoid memory leaks.  They rely on std.mem for allocation (make, resize,
+// drop) and on the C library for strlen/memcpy.
+// ============================================================================
+
+// Import memory management primitives from the std.mem module.
+//   make(size)    -> allocates a new buffer of `size` bytes
+//   drop(ptr)     -> frees a previously allocated buffer
+//   resize(ptr, size) -> resizes an allocation, possibly moving it
+from std.mem import make, drop, resize
+
+// --- External (C library) functions ---
+//
+// strlen: returns the length (in bytes, excluding the null terminator)
+//         of a null-terminated C string.
+// memcpy: copies `n` bytes from `src` to `dest`.  Behaviour is undefined
+//         when the regions overlap.
+extern fn strlen(s as cstr) as usize
+extern fn memcpy(dest as ptr, src as ptr, n as usize) as ptr
+
+// ============================================================================
+// String
+//
+// A heap-allocated, null-terminated string that tracks its own length
+// and capacity to avoid repeated strlen calls and to support efficient
+// appending.
+//
+// Fields:
+//   data     – pointer to a heap-allocated buffer holding the string bytes
+//              plus a null terminator at index [len].
+//   len      – number of bytes in the string (NOT counting the null terminator)
+//   capacity – total size of the allocated buffer (≥ len + 1)
+//
+// Invariant:  data[len] == 0   (null terminator)
+// Invariant:  capacity >= len + 1
+// Invariant:  data != None  for a valid initialized String
+// ============================================================================
+struct String:
+    public var data as ptr[u8]
+    public var len as usize
+    public var capacity as usize
+
+    // -----------------------------------------------------------------
+    // String.__init__(self, s, data, len, capacity)
+    //
+    // Construct a new String from a C-style null-terminated string `s`,
+    // or from pre-allocated raw parts.
+    // -----------------------------------------------------------------
+    public fn __init__(self as ptr[String], s as cstr = None to cstr, data as ptr[u8] = None to ptr[u8], len as usize = 0, capacity as usize = 0):
+        if data to ptr != None:
+            (deref self).data = data
+            (deref self).len = len
+            (deref self).capacity = capacity
+        elif s to ptr != None:
+            let l as usize = strlen(s)
+            let cap as usize = l + 1
+            let d as ptr[u8] = make(cap) to ptr[u8]
+            memcpy(d to ptr, s to ptr, cap)
+            (deref self).data = d
+            (deref self).len = l
+            (deref self).capacity = cap
+        else:
+            (deref self).data = None to ptr[u8]
+            (deref self).len = 0
+            (deref self).capacity = 0
+
+    // -----------------------------------------------------------------
+    // String.__del__(self)
+    //
+    // Release the heap buffer owned by this String.
+    // -----------------------------------------------------------------
+    public fn __del__(self as ptr[String]):
+        if (deref self).data to ptr != None:
+            drop((deref self).data to ptr)
+            (deref self).data = None to ptr[u8]
+
+    // -----------------------------------------------------------------
+    // String.__getitem__(self, idx)
+    //
+    // Get the character at the specified index.
+    // -----------------------------------------------------------------
+    public fn __getitem__(self as String, idx as usize) -> u8:
+        return self.data[idx]
+
+    fn make(s as cstr) as String:
+        return String(s)
+
+    fn deinit(self as ptr[String]):
+        self.__del__()
+
+    // -----------------------------------------------------------------
+    // String.append(self, other)
+    //
+    // Append the contents of `other` to the end of `self`, growing the
+    // underlying buffer when necessary.
+    //
+    // Algorithm:
+    //   1. Compute new_len = self.len + other.len.
+    //   2. If new_len >= self.capacity, grow the buffer to
+    //      (new_len + 1) * 2  (double the required capacity to amortise
+    //      future appends).
+    //   3. memcpy other's data into self's buffer starting at the old end.
+    //   4. Update self.len.
+    //
+    // Note: memcpy copies `other.len + 1` bytes so the null terminator
+    // is always placed correctly.
+    // -----------------------------------------------------------------
+    fn append(self as ptr[String], other as ptr[String]):
+        let new_len as usize = (deref self).len + (deref other).len
+        if new_len >= (deref self).capacity: 
+            let new_cap as usize = (new_len + 1) * 2
+            (deref self).data = resize((deref self).data to ptr, new_cap) to ptr[u8]
+            (deref self).capacity = new_cap
+        
+        let dest_ptr as ptr[u8] = ref (deref self).data[(deref self).len]
+        memcpy(dest_ptr to ptr, (deref other).data to ptr, (deref other).len + 1)
+        (deref self).len = new_len
+
+// ============================================================================
+// StringBuilder
+//
+// A mutable, growable string builder that minimizes reallocations by
+// doubling capacity whenever the buffer fills up.
+//
+// Design notes:
+//   - The initial buffer size is 16 bytes.
+//   - The buffer is always null-terminated so it is safe to read as cstr.
+//   - Two sets of methods exist: the idiomatic short names (append, to_string,
+//     deinit) and the longer, more explicit builders (append_builder,
+//     builder_to_string, deinit_builder).  Both are equivalent; the short
+//     names simply delegate to the builder-named counterparts.
+//
+// Typical usage:
+//   let mut sb as StringBuilder = StringBuilder.make_builder()
+//   sb.append_builder("hello ")
+//   sb.append_builder("world")
+//   let s as String = sb.builder_to_string()
+//   sb.deinit_builder()
+//   // ... use s ... then s.deinit()
+// ============================================================================
+struct StringBuilder:
+    public var buffer as ptr[u8]
+    public var len as usize
+    public var capacity as usize
+
+    // -----------------------------------------------------------------
+    // StringBuilder.__init__(self)
+    //
+    // Allocate and initialise a new StringBuilder.
+    // -----------------------------------------------------------------
+    public fn __init__(self as ptr[StringBuilder]):
+        let cap as usize = 16
+        let buf as ptr[u8] = make(cap) to ptr[u8]
+        buf[0] = 0
+        (deref self).buffer = buf
+        (deref self).len = 0
+        (deref self).capacity = cap
+
+    // -----------------------------------------------------------------
+    // StringBuilder.__del__(self)
+    //
+    // Release the heap buffer owned by this StringBuilder.
+    // -----------------------------------------------------------------
+    public fn __del__(self as ptr[StringBuilder]):
+        if (deref self).buffer to ptr != None:
+            drop((deref self).buffer to ptr)
+            (deref self).buffer = None to ptr[u8]
+
+    fn make() as StringBuilder:
+        return StringBuilder()
+
+    fn make_builder() as StringBuilder:
+        return StringBuilder()
+
+    fn deinit(self as ptr[StringBuilder]):
+        self.__del__()
+
+    fn deinit_builder(self as ptr[StringBuilder]):
+        self.__del__()
+
+    // -----------------------------------------------------------------
+    // StringBuilder.append(self, s)
+    //
+    // Delegate to append_builder().  Append a null-terminated C string
+    // to the builder.
+    // -----------------------------------------------------------------
+    fn append(self as ptr[StringBuilder], s as cstr):
+        self.append_builder(s)
+
+    // -----------------------------------------------------------------
+    // StringBuilder.append_builder(self, s)
+    //
+    // Append a null-terminated C string `s` to the internal buffer.
+    //
+    // Growth policy: when the buffer is too small for the concatenated
+    // result, it is resized to (new_len + 1) * 2 (i.e. double the
+    // required capacity).
+    //
+    // The buffer remains null-terminated after every call.
+    // -----------------------------------------------------------------
+    fn append_builder(self as ptr[StringBuilder], s as cstr):
+        let add_len as usize = strlen(s)
+        let new_len as usize = (deref self).len + add_len
+        if new_len >= (deref self).capacity:
+            let new_cap as usize = (new_len + 1) * 2
+            (deref self).buffer = resize((deref self).buffer to ptr, new_cap) to ptr[u8]
+            (deref self).capacity = new_cap
+        let dest_ptr as ptr[u8] = ref (deref self).buffer[(deref self).len]
+        memcpy(dest_ptr to ptr, s to ptr, add_len + 1)
+        (deref self).len = new_len
+
+    // -----------------------------------------------------------------
+    // StringBuilder.to_string(self)
+    //
+    // Delegate to builder_to_string().  Produce a new String from the
+    // current builder contents.
+    //
+    // The builder's internal buffer is NOT consumed – it can still be
+    // appended to after this call.
+    // -----------------------------------------------------------------
+    fn to_string(self as ptr[StringBuilder]) as String:
+        return self.builder_to_string()
+
+    // -----------------------------------------------------------------
+    // StringBuilder.builder_to_string(self)
+    //
+    // Create a fresh String by copying the current builder content.
+    //
+    // The returned String owns a newly allocated buffer (via String.make),
+    // so the caller is responsible for calling .deinit() on it.
+    //
+    // The StringBuilder itself is unaffected and can continue to be used.
+    // -----------------------------------------------------------------
+    fn builder_to_string(self as ptr[StringBuilder]) as String:
+        return String((deref self).buffer to cstr)
+
+// ============================================================================
+// Module-level documentation notes:
+//
+// Memory model:
+//   Both String and StringBuilder own heap-allocated buffers.  It is the
+//   caller's responsibility to call .deinit() / .deinit_builder() to free
+//   those buffers.  Failure to do so leaks memory.
+//
+// Null safety:
+//   After deinitialisation the internal pointer is set to None, so
+//   accidental double-free is prevented (the deinit methods are idempotent).
+//
+// Performance characteristics:
+//   String.append       – O(n) in the length of `other` (memcpy).
+//                         O(1) amortised reallocation cost via doubling.
+//   StringBuilder.append – same as String.append.
+//   StringBuilder.builder_to_string – O(n) copy of all buffered bytes.
+//
+// Thread safety:
+//   This module provides NO thread-safety guarantees.  Concurrent
+//   mutation of a String or StringBuilder from multiple threads
+//   is undefined behaviour.
+// ============================================================================

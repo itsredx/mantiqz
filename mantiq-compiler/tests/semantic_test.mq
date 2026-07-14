@@ -1,0 +1,6 @@
+fn multiply(x as i32, y as i32) -> i32:
+    return x * y
+
+fn main():
+    let a = multiply(10)
+    print(a)

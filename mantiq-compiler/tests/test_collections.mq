@@ -1,0 +1,57 @@
+from std.collections import List, Dict
+import std.io
+
+fn main():
+    # 1. Test Dynamic List
+    let lst = List[i32]()
+    print("List initial length: ")
+    println(lst.length())
+    
+    lst.append(10)
+    lst.append(20)
+    lst.append(30)
+    
+    print("List length after append: ")
+    println(lst.length())
+    
+    print("List elements: ")
+    print(lst[0])
+    print(" ")
+    print(lst[1])
+    print(" ")
+    println(lst[2])
+    
+    # Mutating an element via index
+    lst[1] = 99
+    print("List element 1 updated: ")
+    println(lst[1])
+    
+    lst.clear()
+    print("List length after clear: ")
+    println(lst.length())
+
+    # 2. Test Dynamic Dict
+    let d = Dict[String, i32]()
+    print("Dict initial length: ")
+    println(d.length())
+    
+    d["alice"] = 100
+    d["bob"] = 200
+    
+    print("Dict length after inserts: ")
+    println(d.length())
+    
+    print("Dict has 'alice': ")
+    println(d.has("alice"))
+    
+    print("Dict has 'charlie': ")
+    println(d.has("charlie"))
+    
+    print("Dict values: ")
+    print(d["alice"])
+    print(" ")
+    println(d["bob"])
+    
+    d.clear()
+    print("Dict length after clear: ")
+    println(d.length())

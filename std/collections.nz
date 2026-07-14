@@ -1,0 +1,131 @@
+// ============================================================================
+// std/collections.nz
+// Nizam standard library module for generic collection types.
+//
+// Currently provides:
+//   Set[T]  – a hash-set backed by Dict[T, bool] that stores unique values.
+//
+// This module is intended to grow over time to include additional
+// data structures such as Vec, Deque, HashMap, BTreeMap, etc.
+// ============================================================================
+
+// ============================================================================
+// Set[T]
+//
+// A generic set type that maintains a collection of unique items.
+// Implemented as a thin wrapper around Dict[T, bool], where the
+// dictionary keys are the set elements and the values are always True.
+//
+// Type parameter:
+//   T – the element type (must be usable as a Dict key, i.e. hashable
+//       and equatable).
+//
+// Performance:
+//   - add / has / remove are O(1) average-case, O(n) worst-case
+//     (delegated to the underlying Dict).
+//   - clear is O(n) where n is the current number of elements.
+//   - length is O(1) (cached by the underlying Dict).
+//
+// Example usage:
+//   let mut s as Set[i64] = Set[i64]()
+//   s.add(42)
+//   s.add(7)
+//   if s.has(42):
+//       // ... use it ...
+//   s.remove(7)
+//   let cnt as i64 = s.length()
+//   s.clear()
+//
+// Thread safety:
+//   No thread-safety guarantees are provided.
+// ============================================================================
+struct Set[T]:
+    // Internal dictionary mapping elements -> True.
+    // Uses the existing Dict implementation for all storage and lookup.
+    public var _dict as Dict[T, bool] = Dict[T, bool]()
+
+    public fn __init__(self as ptr[Set[T]]):
+        (deref self)._dict = Dict[T, bool]()
+
+    public fn __getitem__(self as Set[T], item as T) -> bool:
+        return self.has(item)
+
+    public fn __setitem__(self as ptr[Set[T]], item as T, val as bool):
+        if val:
+            self.add(item)
+        else:
+            let discarded as bool = self.remove(item)
+
+    // -----------------------------------------------------------------
+    // Set.add(self, item)
+    //
+    // Insert `item` into the set.
+    //
+    // If the item is already present, the set is unchanged (no duplicates).
+    //
+    // Complexity: O(1) average-case.
+    // -----------------------------------------------------------------
+    public fn add(self as ptr[Set[T]], item as T):
+        (deref self)._dict[item] = True
+
+    // -----------------------------------------------------------------
+    // Set.has(self, item) -> bool
+    //
+    // Return True if `item` is present in the set, False otherwise.
+    //
+    // Complexity: O(1) average-case.
+    // -----------------------------------------------------------------
+    public fn has(self, item as T) as bool:
+        return self._dict.has(item)
+
+    // -----------------------------------------------------------------
+    // Set.remove(self as ptr[Set[T]], item) -> bool
+    //
+    // Remove `item` from the set if it is present.
+    //
+    // Returns:
+    //   True  – if the item was found and removed.
+    //   False – if the item was not present.
+    //
+    // Complexity: O(1) average-case.
+    // -----------------------------------------------------------------
+    public fn remove(self as ptr[Set[T]], item as T) as bool:
+        return (deref self)._dict.remove(item)
+
+    public fn to_list(self) as List[T]:
+        return self._dict.keys()
+
+    // -----------------------------------------------------------------
+    // Set.clear(self as ptr[Set[T]])
+    //
+    // Remove all elements from the set.
+    //
+    // After this call, length() returns 0.
+    //
+    // Complexity: O(n) where n is the number of elements before clearing.
+    // -----------------------------------------------------------------
+    public fn clear(self as ptr[Set[T]]):
+        (deref self)._dict.clear()
+
+    // -----------------------------------------------------------------
+    // Set.length(self) -> i64
+    //
+    // Return the number of distinct elements currently in the set.
+    //
+    // Complexity: O(1) (the value is cached by the underlying Dict).
+    // -----------------------------------------------------------------
+    public fn length(self) as i64:
+        return self._dict.length()
+
+// ============================================================================
+// Future collection plans (not yet implemented):
+//
+//   Vec[T]         – dynamic array / vector
+//   Deque[T]       – double-ended queue
+//   HashMap[K, V]  – open-addressing / Robin Hood hash map
+//   BTreeMap[K, V] – ordered map backed by a B-tree
+//   Stack[T]       – LIFO stack (could be a Vec wrapper)
+//   Queue[T]       – FIFO queue (could be a Deque wrapper)
+//   LinkedList[T]  – doubly-linked list
+//   BinaryHeap[T]  – priority queue
+// ============================================================================

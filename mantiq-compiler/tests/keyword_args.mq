@@ -1,0 +1,7 @@
+fn move(x as i32 = 0, y as i32 = 0) -> i32:
+    return x + y
+
+fn main():
+    print(move())
+    print(move(10))
+    print(move(y=10, x=5))

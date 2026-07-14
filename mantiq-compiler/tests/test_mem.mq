@@ -1,0 +1,15 @@
+import std.mem
+
+fn main():
+    // Allocate 16 bytes
+    let _ptr = make(16)
+    print(_ptr)
+    print("\n")
+    
+    // Reallocate to 32 bytes
+    let _new_ptr = resize(_ptr, 32)
+    print(_new_ptr)
+    print("\n")
+    
+    // Free memory
+    drop(_new_ptr)

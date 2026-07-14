@@ -1,0 +1,10 @@
+interface Drawable:
+    fn draw(self as Drawable) -> i32
+
+class Window(Drawable):
+    public fn draw(self as Window) -> i32:
+        return 42
+
+fn main():
+    let w as Window = Window()
+    print(w.draw())

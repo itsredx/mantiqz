@@ -1,0 +1,20 @@
+import std.sys
+import std.io
+
+fn main():
+    let my_os = os()
+    let my_arch = arch()
+    print("OS: ")
+    println(my_os)
+    print("Arch: ")
+    println(my_arch)
+    
+    setenv("MANTIQ_TEST_VAR", "12345")
+    let val = getenv("MANTIQ_TEST_VAR")
+    print("MANTIQ_TEST_VAR: ")
+    println(val)
+    
+    unsetenv("MANTIQ_TEST_VAR")
+    let unset_val = getenv("MANTIQ_TEST_VAR")
+    if unset_val == "":
+        print("Environment variable unset successfully\n")

@@ -1,0 +1,27 @@
+{
+  "grammars": [
+    {
+      "name": "mantiq",
+      "camelcase": "mantiq",
+      "scope": "source.mantiq",
+      "file-types": [
+        "mq"
+      ],
+      "external-tokens": [
+        "_indent",
+        "_dedent",
+        "_newline"
+      ]
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Mantiq Programming Language",
+    "authors": [
+      {
+        "name": "Antigravity"
+      }
+    ]
+  }
+}

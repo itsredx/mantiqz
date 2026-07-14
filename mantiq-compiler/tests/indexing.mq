@@ -1,0 +1,10 @@
+let list = [10, 20, 30]
+print(list[0])
+print(list[1])
+list[2] = 50
+print(list[2])
+
+let scores = {"alice": 95, "bob": 80}
+print(scores["alice"])
+scores["bob"] = 100
+print(scores["bob"])

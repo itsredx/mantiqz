@@ -1,0 +1,111 @@
+// ============================================================================
+// std/math.nz
+// Nizam standard library module for mathematical constants and functions.
+//
+// This module provides:
+//   - Mathematical constants: PI, E
+//   - Polymorphic helpers:    min, max, abs (generic over any ordered type)
+//   - C math library wrappers: sqrt, sin, cos, tan, ceil, floor, pow,
+//     log, exp (all operating on f64)
+//
+// The C math library is linked via "m" (the standard -lm flag on Unix).
+// ============================================================================
+
+// Link against the system math library (libm).
+// On Unix-like systems this is equivalent to `-lm`.
+link "m"
+
+// --- C math library externs ------------------------------------------------
+//
+// Each of these functions wraps the corresponding libm function and
+// operates on double-precision (f64) values.
+//
+// Domain errors (e.g. sqrt(-1), log(0)) produce NaN or inf as specified
+// by IEEE 754 and the C standard.
+extern fn sqrt(x as f64) as f64   // square root (√x)
+extern fn sin(x as f64) as f64   // sine (radians)
+extern fn cos(x as f64) as f64   // cosine (radians)
+extern fn tan(x as f64) as f64   // tangent (radians)
+extern fn ceil(x as f64) as f64  // smallest integer ≥ x
+extern fn floor(x as f64) as f64 // largest integer ≤ x
+extern fn pow(base as f64, exp as f64) as f64  // base^exp
+extern fn log(x as f64) as f64   // natural logarithm (ln x)
+extern fn exp(x as f64) as f64   // e^x
+
+// ============================================================================
+// Mathematical constants
+// ============================================================================
+
+// PI: the ratio of a circle's circumference to its diameter (π ≈ 3.14159...)
+let PI as f64 = 3.141592653589793
+
+// E: the base of the natural logarithm (e ≈ 2.71828...)
+let E as f64 = 2.718281828459045
+
+// ============================================================================
+// Generic polymorphic helpers
+//
+// These functions work with any type T that supports the <, >, and unary -
+// operators.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// min[T](a, b) -> T
+//
+// Return the smaller of `a` and `b`.
+//
+// If a == b, returns a.
+// ---------------------------------------------------------------------------
+fn min[T](a as T, b as T) as T:
+    if a < b:
+        return a
+    else:
+        return b
+
+// ---------------------------------------------------------------------------
+// max[T](a, b) -> T
+//
+// Return the larger of `a` and `b`.
+//
+// If a == b, returns a.
+// ---------------------------------------------------------------------------
+fn max[T](a as T, b as T) as T:
+    if a > b:
+        return a
+    else:
+        return b
+
+// ---------------------------------------------------------------------------
+// abs[T](a) -> T
+//
+// Return the absolute value of `a`.
+//
+// For signed integer types, note that abs(MIN) may overflow on two's
+// complement systems (e.g. abs(-128) for i8 cannot be represented as
+// a positive i8).  Use care with unsigned types (abs is a no-op for
+// unsigned values since they are always non-negative).
+// ---------------------------------------------------------------------------
+fn abs[T](a as T) as T:
+    if a < 0 to T:
+        return -a
+    else:
+        return a
+
+// ============================================================================
+// Future additions (not yet implemented):
+//
+//   Trigonometric:
+//     asin, acos, atan, atan2, sinh, cosh, tanh
+//
+//   Rounding / remainder:
+//     round, trunc, fmod, remainder
+//
+//   Integer utilities:
+//     gcd, lcm, clamp, lerp
+//
+//   Floating-point classification:
+//     is_nan, is_inf, is_finite, copysign
+//
+//   Random:
+//     rand, rand_range, seed (requires OS entropy source)
+// ============================================================================

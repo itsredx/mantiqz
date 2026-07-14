@@ -1,0 +1,22 @@
+# Zig build cache and outputs
+.zig-cache/
+zig-cache/
+zig-out/
+
+# JIT / AOT temporary compilation files
+*_jit.ll
+lib*_jit.so
+*_jit_runtime.c
+*_runtime.c
+
+# General compiler/linker outputs
+*.o
+*.so
+*.ll
+
+# Editor / OS metadata
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~

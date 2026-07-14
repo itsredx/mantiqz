@@ -1,0 +1,16 @@
+class Shape:
+    area as i32
+
+    public fn get_area(self as Shape) -> i32:
+        return self.area
+
+class Circle(Shape):
+    radius as i32
+
+    public fn get_area(self as Circle) -> i32:
+        return self.radius * self.radius * 3
+
+fn main():
+    let s as Shape = Shape(area=100)
+    let c as Circle = Circle(area=0, radius=10)
+    print(c.get_area())
