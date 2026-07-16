@@ -252,7 +252,7 @@ pub const TypeChecker = struct {
                 std.mem.eql(u8, name, "webstr") or std.mem.eql(u8, name, "utf16str") or
                 std.mem.eql(u8, name, "rangestr") or std.mem.eql(u8, name, "utf32str");
             if (is_any_string and !self.is_string_imported) {
-                std.debug.print("Type Error: '{s}' requires an explicit import in Nizam (e.g. from std.collections import String)\n", .{name});
+                std.debug.print("Type Error: '{s}' requires an explicit import in Nizam (e.g. from std.string import String)\n", .{name});
                 return error.ImplicitAllocationNotAllowed;
             }
             if (std.mem.eql(u8, name, "List") and !self.is_list_imported) {
@@ -1351,7 +1351,7 @@ pub const TypeChecker = struct {
                                     if (st.fields[i].default_value) |dv| {
                                         new_args.items[i] = @ptrCast(@alignCast(dv));
                                     } else {
-                                        std.debug.print("Type Error: Missing required field '{s}' in struct initialization\n", .{st.fields[i].name});
+                                        std.debug.print("Type Error: Missing required field '{s}' in struct '{s}' initialization\n", .{st.fields[i].name, st.name});
                                         return error.TypeMismatch;
                                     }
                                 }

@@ -862,6 +862,30 @@ pub const LLVMCodegen = struct {
         try self.type_out.writer().print("declare {s} @{s}({s})\n", .{ final_ret_t, func_name, param_str.items });
     }
 
+
+    fn isStringLikeType(t: types.Type) bool {
+        if (t.kind == .String or t.kind == .AsciiStr or t.kind == .Utf8Str or t.kind == .WebStr or t.kind == .RangeStr) {
+            return true;
+        }
+        if (t.kind == .Struct and t.struct_type != null) {
+            return std.mem.endsWith(u8, t.struct_type.?.name, "String");
+        }
+        return false;
+    }
+
+    fn getDictStringKeyFlag(t: types.Type) u32 {
+        if (t.kind == .AsciiStr or t.kind == .Utf8Str or t.kind == .WebStr or t.kind == .RangeStr) {
+            return 1;
+        }
+        if (t.kind == .String) {
+            return 2;
+        }
+        if (t.kind == .Struct and t.struct_type != null and std.mem.endsWith(u8, t.struct_type.?.name, "String")) {
+            return 2;
+        }
+        return 0;
+    }
+
     fn typeToLLVM(allocator: std.mem.Allocator, kind: types.Type) []const u8 {
         return switch (kind.kind) {
             .Void => "void",
@@ -1146,6 +1170,47 @@ pub const LLVMCodegen = struct {
             },
             .FunDecl => |*f| {
                 if (f.generic_params != null) return;
+                
+                const prev_is_global = self.is_global;
+                const prev_current_func_ret_llvm = self.current_func_ret_llvm;
+                const prev_current_func_ret_ast = self.current_func_ret_ast;
+                const prev_temp_counter = self.temp_counter;
+                const prev_decl_counter = self.decl_counter;
+                const prev_active_param_block = self.active_param_block;
+                const prev_active_block_exit = self.active_block_exit;
+                const prev_active_loop_cond = self.active_loop_cond;
+                const prev_active_loop_exit = self.active_loop_exit;
+                const prev_scope_depth = self.scope_depth;
+                
+                const prev_local_allocas = self.local_allocas;
+                const prev_scope_var_stack = self.scope_var_stack;
+                const prev_var_name_map = self.var_name_map;
+                
+                self.local_allocas = std.StringHashMap(bool).init(self.allocator);
+                self.scope_var_stack = std.ArrayList(std.StringHashMap([]const u8)).init(self.allocator);
+                self.var_name_map = std.StringHashMap([]const u8).init(self.allocator);
+                self.scope_depth = 0;
+                
+                defer {
+                    self.local_allocas.deinit();
+                    self.scope_var_stack.deinit();
+                    self.var_name_map.deinit();
+                    
+                    self.is_global = prev_is_global;
+                    self.current_func_ret_llvm = prev_current_func_ret_llvm;
+                    self.current_func_ret_ast = prev_current_func_ret_ast;
+                    self.temp_counter = prev_temp_counter;
+                    self.decl_counter = prev_decl_counter;
+                    self.active_param_block = prev_active_param_block;
+                    self.active_block_exit = prev_active_block_exit;
+                    self.active_loop_cond = prev_active_loop_cond;
+                    self.active_loop_exit = prev_active_loop_exit;
+                    self.scope_depth = prev_scope_depth;
+                    self.local_allocas = prev_local_allocas;
+                    self.scope_var_stack = prev_scope_var_stack;
+                    self.var_name_map = prev_var_name_map;
+                }
+                
                 self.is_global = false;
                 const is_main = std.mem.eql(u8, f.name, "main");
                 if (is_main) {
@@ -1165,12 +1230,22 @@ pub const LLVMCodegen = struct {
                         const inferred: types.Type = param.inferred_type orelse .{ .kind = .Any };
                         const t = typeToLLVM(self.allocator, inferred);
                         const sig = abi.getArgABI(inferred, layout.Target.x86_64_linux);
-                        if (sig.mode == .ByVal) {
-                            try std.fmt.format(param_str.writer(), "ptr byval({s}) %{s}.param", .{ t, param.data.Identifier.name });
-                        } else if (sig.mode == .Coerce) {
-                            try std.fmt.format(param_str.writer(), "{s} %{s}.param", .{ sig.llvm_type, param.data.Identifier.name });
+                        if (f.is_extern) {
+                            if (sig.mode == .ByVal) {
+                                try std.fmt.format(param_str.writer(), "ptr byval({s})", .{ t });
+                            } else if (sig.mode == .Coerce) {
+                                try std.fmt.format(param_str.writer(), "{s}", .{ sig.llvm_type });
+                            } else {
+                                try std.fmt.format(param_str.writer(), "{s}", .{ t });
+                            }
                         } else {
-                            try std.fmt.format(param_str.writer(), "{s} %{s}.param", .{ t, param.data.Identifier.name });
+                            if (sig.mode == .ByVal) {
+                                try std.fmt.format(param_str.writer(), "ptr byval({s}) %{s}.param", .{ t, param.data.Identifier.name });
+                            } else if (sig.mode == .Coerce) {
+                                try std.fmt.format(param_str.writer(), "{s} %{s}.param", .{ sig.llvm_type, param.data.Identifier.name });
+                            } else {
+                                try std.fmt.format(param_str.writer(), "{s} %{s}.param", .{ t, param.data.Identifier.name });
+                            }
                         }
                     }
                     var actual_ret_type: types.Type = node.inferred_type orelse .{ .kind = .Void };
@@ -1194,8 +1269,10 @@ pub const LLVMCodegen = struct {
                     }
                     
                     if (f.is_extern) {
-                        try writer.print("declare {s} @{s}({s})\n", .{ final_ret_t, func_symbol_name, param_str.items });
-                        self.is_global = true;
+                        if (!self.external_decls.contains(func_symbol_name)) {
+                            try self.external_decls.put(func_symbol_name, true);
+                            try self.type_out.writer().print("declare {s} @{s}({s})\n", .{ final_ret_t, func_symbol_name, param_str.items });
+                        }
                         return;
                     }
                     
@@ -2110,7 +2187,7 @@ pub const LLVMCodegen = struct {
                     try writer.print("  %t.{d} = alloca {s}\n", .{ k_alloc, k_llvm });
                     try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ k_llvm, index_val, k_alloc });
                     
-                    if (k_kind == .String or k_kind == .AsciiStr or k_kind == .Utf8Str or k_kind == .WebStr or k_kind == .RangeStr) {
+                    if (isStringLikeType(k_type)) {
                         const str_ptr = self.nextTemp();
                         try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ str_ptr, k_llvm, index_val });
                         const str_len = self.nextTemp();
@@ -2130,7 +2207,7 @@ pub const LLVMCodegen = struct {
                 return error.UnsupportedNode;
             },
             else => {
-                std.debug.print("Unsupported node type for LValue generation: {}\n", .{node.node_type});
+                std.debug.print("Unsupported node type for LValue generation: {}, span=({d}:{d})-({d}:{d})\n", .{node.node_type, node.span.start_row, node.span.start_col, node.span.end_row, node.span.end_col});
                 return error.UnsupportedNode;
             },
         }
@@ -2936,6 +3013,16 @@ pub const LLVMCodegen = struct {
                     return fat_name;
                 }
 
+                // Cast from Enum to Integer/Tag
+                if (c.operand.inferred_type) |inf_t| {
+                    if (inf_t.kind == .Enum and std.mem.startsWith(u8, target_type, "i")) {
+                        const tag_val = self.nextTemp();
+                        try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ tag_val, source_type, operand_val });
+                        const tag_val_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{tag_val});
+                        return try self.coerceType(tag_val_name, "i32", target_type);
+                    }
+                }
+
                 // Cast from string/slice/pointer to integer/char (i8/u8/char/etc.)
                 if (std.mem.startsWith(u8, target_type, "i") and 
                     (std.mem.eql(u8, source_type, "{ ptr, i64 }") or 
@@ -2982,6 +3069,10 @@ pub const LLVMCodegen = struct {
                         try std.fmt.format(buf.writer(), "fpext (bfloat {s} to float)", .{operand_val});
                     } else if (std.mem.eql(u8, source_type, "i32") and std.mem.eql(u8, target_type, "i64")) {
                         try std.fmt.format(buf.writer(), "sext (i32 {s} to i64)", .{operand_val});
+                    } else if (std.mem.startsWith(u8, source_type, "i") and std.mem.eql(u8, target_type, "ptr")) {
+                        try std.fmt.format(buf.writer(), "inttoptr ({s} {s} to ptr)", .{ source_type, operand_val });
+                    } else if (std.mem.eql(u8, source_type, "ptr") and std.mem.startsWith(u8, target_type, "i")) {
+                        try std.fmt.format(buf.writer(), "ptrtoint (ptr {s} to {s})", .{ operand_val, target_type });
                     } else {
                         try std.fmt.format(buf.writer(), "bitcast ({s} {s} to {s})", .{ source_type, operand_val, target_type });
                     }
@@ -3002,6 +3093,10 @@ pub const LLVMCodegen = struct {
                     try writer.print("  {s} = sitofp {s} {s} to double\n", .{ temp_name, source_type, operand_val });
                 } else if ((std.mem.eql(u8, source_type, "i32") or std.mem.eql(u8, source_type, "i64")) and std.mem.eql(u8, target_type, "float")) {
                     try writer.print("  {s} = sitofp {s} {s} to float\n", .{ temp_name, source_type, operand_val });
+                } else if (std.mem.startsWith(u8, source_type, "i") and std.mem.eql(u8, target_type, "ptr")) {
+                    try writer.print("  {s} = inttoptr {s} {s} to ptr\n", .{ temp_name, source_type, operand_val });
+                } else if (std.mem.eql(u8, source_type, "ptr") and std.mem.startsWith(u8, target_type, "i")) {
+                    try writer.print("  {s} = ptrtoint ptr {s} to {s}\n", .{ temp_name, operand_val, target_type });
                 } else {
                     // Fallback generic bitcast
                     try writer.print("  {s} = bitcast {s} {s} to {s}\n", .{ temp_name, source_type, operand_val, target_type });
@@ -3285,9 +3380,7 @@ pub const LLVMCodegen = struct {
                                 const v_type = inf_t.tuple_types.?[1];
                                 k_size = types.getTypeSize(k_type);
                                 v_size = types.getTypeSize(v_type);
-                                if (k_type.kind == .String or k_type.kind == .AsciiStr or k_type.kind == .Utf8Str or k_type.kind == .WebStr or k_type.kind == .RangeStr) {
-                                    is_str_flag = 1;
-                                }
+                                is_str_flag = getDictStringKeyFlag(k_type);
                             }
                         }
                         const dict_ptr = self.nextTemp();
@@ -4058,7 +4151,7 @@ pub const LLVMCodegen = struct {
                     try writer.print("  %t.{d} = alloca {s}\n", .{ k_alloc, k_llvm });
                     try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ k_llvm, index_val, k_alloc });
                     
-                    if (k_kind == .String or k_kind == .AsciiStr or k_kind == .Utf8Str or k_kind == .WebStr or k_kind == .RangeStr) {
+                    if (isStringLikeType(k_type)) {
                         const str_ptr = self.nextTemp();
                         try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ str_ptr, k_llvm, index_val });
                         const str_len = self.nextTemp();
@@ -4255,12 +4348,7 @@ pub const LLVMCodegen = struct {
                 const k_size_int = types.getTypeSize(k_ast_type);
                 const v_size_int = types.getTypeSize(v_ast_type);
                 
-                var is_str_flag: u32 = 0;
-                if (k_kind == .AsciiStr or k_kind == .Utf8Str or k_kind == .WebStr or k_kind == .RangeStr) {
-                    is_str_flag = 1;
-                } else if (k_kind == .String) {
-                    is_str_flag = 2;
-                }
+                const is_str_flag: u32 = getDictStringKeyFlag(k_ast_type);
 
                 const dict_ptr = self.nextTemp();
                 const dict_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{dict_ptr});
@@ -4280,7 +4368,7 @@ pub const LLVMCodegen = struct {
                     try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ v_type, v_val, v_alloc });
                     
                     const hash_temp = self.nextTemp();
-                    if (k_kind == .String or k_kind == .AsciiStr or k_kind == .Utf8Str or k_kind == .WebStr or k_kind == .RangeStr) {
+                    if (isStringLikeType(k_ast_type)) {
                         const str_ptr = self.nextTemp();
                         try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ str_ptr, k_type, k_val });
                         const str_len = self.nextTemp();
@@ -4927,7 +5015,7 @@ pub const LLVMCodegen = struct {
                         try writer.print("  %t.{d} = alloca {s}\n", .{ k_alloc, k_llvm });
                         try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ k_llvm, key_val, k_alloc });
                         
-                        if (k_kind == .String or k_kind == .AsciiStr or k_kind == .Utf8Str or k_kind == .WebStr or k_kind == .RangeStr) {
+                        if (isStringLikeType(k_type)) {
                             const str_ptr = self.nextTemp();
                             try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ str_ptr, k_llvm, key_val });
                             const str_len = self.nextTemp();
@@ -4979,7 +5067,7 @@ pub const LLVMCodegen = struct {
                         try writer.print("  %t.{d} = alloca {s}\n", .{ k_alloc, k_llvm });
                         try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ k_llvm, key_val, k_alloc });
                         
-                        if (k_kind == .String or k_kind == .AsciiStr or k_kind == .Utf8Str or k_kind == .WebStr or k_kind == .RangeStr) {
+                        if (isStringLikeType(k_type)) {
                             const str_ptr = self.nextTemp();
                             try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ str_ptr, k_llvm, key_val });
                             const str_len = self.nextTemp();
