@@ -92,7 +92,7 @@ fn is_letter(c as u8) as bool:
 // ============================================================================
 fn make_from_slice(bytes as ptr[u8], len as usize) as String:
     let cap as usize = len + 1
-    let d as ptr[u8] = make(cap) to ptr[u8]
+    let d as ptr[u8] = make[u8](cap) to ptr[u8]
     memcpy(d to ptr, bytes to ptr, len)
     d[len] = 0 to u8
     return String(data=d, len=len, capacity=cap)

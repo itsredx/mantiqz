@@ -64,7 +64,7 @@ struct String:
         elif s to ptr != None:
             let l as usize = strlen(s)
             let cap as usize = l + 1
-            let d as ptr[u8] = make(cap) to ptr[u8]
+            let d as ptr[u8] = make[u8](cap) to ptr[u8]
             memcpy(d to ptr, s to ptr, cap)
             (deref self).data = d
             (deref self).len = l
@@ -160,7 +160,7 @@ struct StringBuilder:
     // -----------------------------------------------------------------
     public fn __init__(self as ptr[StringBuilder]):
         let cap as usize = 16
-        let buf as ptr[u8] = make(cap) to ptr[u8]
+        let buf as ptr[u8] = make[u8](cap) to ptr[u8]
         buf[0] = 0
         (deref self).buffer = buf
         (deref self).len = 0

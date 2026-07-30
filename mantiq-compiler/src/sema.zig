@@ -42,6 +42,7 @@ pub const SemanticAnalyzer = struct {
     global_scope: *symbols.Scope,
     current_scope: *symbols.Scope,
     loaded_modules: std.StringHashMap(*symbols.Scope),
+    loaded_asts: std.StringHashMap(*ast.Node),
 
     fn findProjectRoot(allocator: std.mem.Allocator) ![]const u8 {
         const cwd = try std.process.getCwdAlloc(allocator);
@@ -115,7 +116,9 @@ pub const SemanticAnalyzer = struct {
         }
 
         var proj_root_to_free: ?[]const u8 = null;
+        var src_root_to_free: ?[]const u8 = null;
         defer if (proj_root_to_free) |p| self.allocator.free(p);
+        defer if (src_root_to_free) |p| self.allocator.free(p);
 
         const path_buf = try self.allocator.alloc(u8, module_path.len);
         defer self.allocator.free(path_buf);
@@ -144,11 +147,12 @@ pub const SemanticAnalyzer = struct {
             try search_roots.append("/usr/lib/mantiq/vendor/");
         } else {
             try search_roots.append("./");
-            if (std.mem.startsWith(u8, module_path, "std.")) {
-                const proj_root = try findProjectRoot(self.allocator);
-                proj_root_to_free = proj_root;
-                try search_roots.append(proj_root);
-            }
+            const proj_root = try findProjectRoot(self.allocator);
+            proj_root_to_free = proj_root;
+            try search_roots.append(proj_root);
+            const src_root = try std.fmt.allocPrint(self.allocator, "{s}/src/", .{proj_root});
+            src_root_to_free = src_root;
+            try search_roots.append(src_root);
         }
 
         for (search_roots.items) |root| {
@@ -207,6 +211,7 @@ pub const SemanticAnalyzer = struct {
             .global_scope = global_scope,
             .current_scope = global_scope,
             .loaded_modules = std.StringHashMap(*symbols.Scope).init(allocator),
+            .loaded_asts = std.StringHashMap(*ast.Node).init(allocator),
         };
     }
 
@@ -399,6 +404,9 @@ pub const SemanticAnalyzer = struct {
                     var target_scope: ?*symbols.Scope = null;
                     if (self.loaded_modules.get(i.target)) |scope| {
                         target_scope = scope;
+                        if (self.loaded_asts.get(i.target)) |ast_root| {
+                            i.module_ast = ast_root;
+                        }
                     } else {
                         var file = std.fs.cwd().openFile(module_info.filename, .{}) catch |err| {
                             std.debug.print("Semantic Error: Could not open module file '{s}': {}\n", .{ module_info.filename, err });
@@ -416,7 +424,10 @@ pub const SemanticAnalyzer = struct {
                         var macros = std.StringHashMap(lower.MacroDef).init(self.allocator);
                         defer macros.deinit();
                         var lowerer = lower.Lowerer.init(self.allocator, module_info.mode, source_code, &macros);
-                        const ast_root = try lowerer.lowerProgram(root_ts_node);
+                        const ast_root = lowerer.lowerProgram(root_ts_node) catch |err| {
+                             std.debug.print("Lowering failed in file: '{s}'\n", .{module_info.filename});
+                             return err;
+                        };
 
                         // Recursively set module name on nodes BEFORE sema/typecheck using the LLVM flattened namespace
                         for (ast_root.data.Program.declarations) |sub_decl| {
@@ -438,6 +449,7 @@ pub const SemanticAnalyzer = struct {
 
                         var sa = try SemanticAnalyzer.init(self.allocator, module_info.mode);
                         sa.loaded_modules = self.loaded_modules;
+                        sa.loaded_asts = self.loaded_asts;
 
                         if (std.mem.eql(u8, i.target, "std.collections")) {
                             // Inject collections builtins into the module's global scope before analysis
@@ -453,7 +465,9 @@ pub const SemanticAnalyzer = struct {
                         try sa.analyze(ast_root);
 
                         self.loaded_modules = sa.loaded_modules;
+                        self.loaded_asts = sa.loaded_asts;
                         try self.loaded_modules.put(i.target, sa.global_scope);
+                        try self.loaded_asts.put(i.target, ast_root);
                         target_scope = sa.global_scope;
 
                         var tc = typecheck.TypeChecker.init(self.allocator, module_info.mode);

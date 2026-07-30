@@ -121,7 +121,8 @@ pub fn getSize(t: types.Type, target: Target) usize {
         .I128, .U128, .F128 => return 16,
         .Enum => return 40,
         .Slice, .Interface => return target.pointer_size,
-        .String, .Utf8Str, .AsciiStr, .WebStr, .RangeStr => return target.pointer_size * 2,
+        .String => return target.pointer_size * 3,
+        .Utf8Str, .AsciiStr, .WebStr, .RangeStr => return target.pointer_size * 2,
         .CStr => return target.pointer_size,
         .RawPointer => return target.pointer_size,
         .List, .Dict => {
@@ -162,7 +163,7 @@ pub fn getSize(t: types.Type, target: Target) usize {
                 const padding = (max_align - (total_size % max_align)) % max_align;
                 return total_size + padding;
             }
-            return target.pointer_size;
+            return 256;
         },
         .Union => {
             if (t.union_type) |ut| {
@@ -189,9 +190,16 @@ pub fn getSize(t: types.Type, target: Target) usize {
                 }
                 return payload_size;
             }
-            return target.pointer_size;
+            return 256;
         },
         .Option => {
+            if (t.payload) |p| {
+                const p_size = getSize(p.*, target);
+                const p_align = getAlign(p.*, target);
+                const raw_size = 8 + p_size; // Tag + payload
+                const final_padding = (p_align - (raw_size % p_align)) % p_align;
+                return raw_size + final_padding;
+            }
             return target.pointer_size * 2;
         },
         .Result => {

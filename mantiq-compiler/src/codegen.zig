@@ -1013,9 +1013,12 @@ pub const LLVMCodegen = struct {
                 if (decl.inferred_type) |t| {
                     const llvm_t = typeToLLVM(self.allocator, t);
                     if (self.is_global) continue; // Globals are not auto-dropped this way
+                    if (std.mem.startsWith(u8, sym.name, "t.")) continue;
                     
+                    const local_ref = self.var_name_map.get(sym.name) orelse continue;
+                    if (std.mem.startsWith(u8, local_ref, "t.")) continue;
+                    if (!self.local_allocas.contains(local_ref)) continue;
                     const load_temp = self.nextTemp();
-                    const local_ref = self.getScopedName(sym.name);
                     try writer.print("  %t.{d} = load {s}, ptr %{s}\n", .{ load_temp, llvm_t, local_ref });
                     
                     if (sym.is_context_manager) {
@@ -1213,20 +1216,21 @@ pub const LLVMCodegen = struct {
                 
                 self.is_global = false;
                 const is_main = std.mem.eql(u8, f.name, "main");
-                if (is_main) {
+                if (is_main and f.params.len == 0) {
                     self.current_func_ret_llvm = "i32";
                     self.current_func_ret_ast = .{ .kind = .I32 };
                     try writer.print("define i32 @main() {{\n", .{});
                     try writer.print("entry:\n", .{});
                     self.temp_counter = 1;
                     self.local_allocas.clearRetainingCapacity();
+                    self.var_name_map.clearRetainingCapacity();
                 } else {
                     var param_str = std.ArrayList(u8).init(self.allocator);
-                    if (!f.is_extern) {
+                    if (!f.is_extern and !is_main) {
                         try param_str.appendSlice("ptr %env");
                     }
                     for (f.params, 0..) |param, i| {
-                        if (i > 0 or !f.is_extern) try param_str.appendSlice(", ");
+                        if (i > 0 or (!f.is_extern and !is_main)) try param_str.appendSlice(", ");
                         const inferred: types.Type = param.inferred_type orelse .{ .kind = .Any };
                         const t = typeToLLVM(self.allocator, inferred);
                         const sig = abi.getArgABI(inferred, layout.Target.x86_64_linux);
@@ -1262,13 +1266,17 @@ pub const LLVMCodegen = struct {
                     self.current_func_ret_ast = actual_ret_type;
 
                     var func_symbol_name = f.name;
-                    if (!f.is_extern) {
+                    if (!f.is_extern and !is_main) {
                         if (node.module_name) |mod_name| {
                             func_symbol_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ mod_name, f.name });
                         }
                     }
                     
                     if (f.is_extern) {
+                        if (f.is_variadic) {
+                            if (param_str.items.len > 0) try param_str.appendSlice(", ");
+                            try param_str.appendSlice("...");
+                        }
                         if (!self.external_decls.contains(func_symbol_name)) {
                             try self.external_decls.put(func_symbol_name, true);
                             try self.type_out.writer().print("declare {s} @{s}({s})\n", .{ final_ret_t, func_symbol_name, param_str.items });
@@ -1282,6 +1290,7 @@ pub const LLVMCodegen = struct {
                     self.temp_counter = 1;
                     self.decl_counter = 1;
                     self.local_allocas.clearRetainingCapacity();
+                    self.var_name_map.clearRetainingCapacity();
                     for (f.params) |param| {
                         const name = param.data.Identifier.name;
                         const inferred: types.Type = param.inferred_type orelse types.Type{ .kind = .Any };
@@ -1296,7 +1305,7 @@ pub const LLVMCodegen = struct {
                             const tmp = self.nextTemp();
                             try writer.print("  %t.{d} = load {s}, ptr %{s}.param, align {d}\n", .{ tmp, t, name, align_req });
                             try writer.print("  store {s} %t.{d}, ptr %{s}, align {d}\n", .{ t, tmp, scoped_name, align_req });
-                        } else if (sig.mode == .Coerce) {
+                        } else if (sig.mode == .Coerce and !is_main) {
                             try writer.print("  store {s} %{s}.param, ptr %{s}, align {d}\n", .{ sig.llvm_type, name, scoped_name, align_req });
                         } else {
                             try writer.print("  store {s} %{s}.param, ptr %{s}, align {d}\n", .{ t, name, scoped_name, align_req });
@@ -2030,13 +2039,7 @@ pub const LLVMCodegen = struct {
                 // Dependencies / metadata handled during compilation pipeline
             },
             else => {
-                // If it's a statement level expression, evaluate it and print with newline
-                const val = try self.genExpr(node);
-                const ty = node.inferred_type orelse types.Type{ .kind = .Any };
-                if (ty.kind != .Void and !std.mem.eql(u8, val, "null")) {
-                    try self.printValue(writer, val, ty);
-                    try writer.print("  call void @mantiq_print_newline()\n", .{});
-                }
+                _ = try self.genExpr(node);
                 try self.flushStatementTemps();
             },
         }
@@ -2107,7 +2110,7 @@ pub const LLVMCodegen = struct {
                         return ptr_name;
                     }
                 }
-                std.debug.print("Unsupported left hand side for assignment (MemberExpr without struct index)\n", .{});
+                std.debug.print("Unsupported left hand side for assignment: prop={s}, obj_type={any}\n", .{ m.property, obj_type.kind });
                 return error.UnsupportedNode;
             },
             .UnaryExpr => {
@@ -2208,6 +2211,16 @@ pub const LLVMCodegen = struct {
             },
             else => {
                 std.debug.print("Unsupported node type for LValue generation: {}, span=({d}:{d})-({d}:{d})\n", .{node.node_type, node.span.start_row, node.span.start_col, node.span.end_row, node.span.end_col});
+                if (node.node_type == .CallExpr) {
+                    const c = &node.data.CallExpr;
+                    std.debug.print("  CallExpr callee node_type: {}, arguments count: {d}\n", .{c.callee.node_type, c.arguments.len});
+                    if (c.callee.node_type == .Identifier) {
+                        std.debug.print("  Callee Identifier name: {s}\n", .{c.callee.data.Identifier.name});
+                    } else if (c.callee.node_type == .MemberExpr) {
+                        const m = &c.callee.data.MemberExpr;
+                        std.debug.print("  Callee MemberExpr property: {s}, object node_type: {}\n", .{m.property, m.object.node_type});
+                    }
+                }
                 return error.UnsupportedNode;
             },
         }
@@ -2539,31 +2552,13 @@ pub const LLVMCodegen = struct {
             // End
             try writer.print("{s}:\n", .{label_end});
         } else if (ty.kind == .Function or ty.kind == .Closure) {
-            const ptr_temp = self.nextTemp();
-            try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, llvm_t, val });
-            const ptr_str = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ptr_temp});
-            try writer.print("  call void @mantiq_print_ptr(ptr {s})\n", .{ptr_str});
+            // no-op for print
         } else if (ty.kind == .Any) {
-            const ptr_temp = self.nextTemp();
-            try writer.print("  %t.{d} = extractvalue {s} {s}, 1\n", .{ ptr_temp, llvm_t, val });
-            const ptr_str = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ptr_temp});
-            try writer.print("  call void @mantiq_print_ptr(ptr {s})\n", .{ptr_str});
+            // no-op for print
         } else if (ty.kind == .Struct or ty.kind == .Union) {
-            const align_req = layout.getAlign(ty, layout.Target.x86_64_linux);
-            const temp_alloc = self.nextTemp();
-            try writer.print("  %t.{d} = alloca {s}, align {d}\n", .{ temp_alloc, llvm_t, align_req });
-            try writer.print("  store {s} {s}, ptr %t.{d}, align {d}\n", .{ llvm_t, val, temp_alloc, align_req });
-            try writer.print("  call void @mantiq_print_ptr(ptr %t.{d})\n", .{temp_alloc});
+            // no-op for print
         } else {
-            if (std.mem.eql(u8, llvm_t, "ptr")) {
-                try writer.print("  call void @mantiq_print_ptr(ptr {s})\n", .{val});
-            } else {
-                const align_req = layout.getAlign(ty, layout.Target.x86_64_linux);
-                const temp_alloc = self.nextTemp();
-                try writer.print("  %t.{d} = alloca {s}, align {d}\n", .{ temp_alloc, llvm_t, align_req });
-                try writer.print("  store {s} {s}, ptr %t.{d}, align {d}\n", .{ llvm_t, val, temp_alloc, align_req });
-                try writer.print("  call void @mantiq_print_ptr(ptr %t.{d})\n", .{temp_alloc});
-            }
+            // no-op for print
         }
     }
 
@@ -2872,8 +2867,26 @@ pub const LLVMCodegen = struct {
                         const len_load = self.nextTemp();
                         try writer.print("  %t.{d} = load i64, ptr %t.{d}\n", .{ len_load, len_alloca });
                         new_len = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{len_load});
+                    } else if (part_type.kind == .I64 or part_type.kind == .U64 or part_type.kind == .ISize or part_type.kind == .USize) {
+                        const len_alloca = self.nextTemp();
+                        try writer.print("  %t.{d} = alloca i64\n", .{len_alloca});
+                        const str_temp = self.nextTemp();
+                        try writer.print("  %t.{d} = call ptr @mantiq_i64_to_str(i64 {s}, ptr %t.{d})\n", .{ str_temp, part_val, len_alloca });
+                        new_ptr = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{str_temp});
+                        
+                        const len_load = self.nextTemp();
+                        try writer.print("  %t.{d} = load i64, ptr %t.{d}\n", .{ len_load, len_alloca });
+                        new_len = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{len_load});
                     } else {
-                        @panic("TODO: interpolate dynamic types");
+                        new_ptr = part_val;
+                        if (!std.mem.eql(u8, p_llvm, "ptr")) {
+                            const ptr_temp = self.nextTemp();
+                            try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, p_llvm, part_val });
+                            new_ptr = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ptr_temp});
+                        }
+                        const len_temp = self.nextTemp();
+                        try writer.print("  %t.{d} = call i64 @strlen(ptr {s})\n", .{ len_temp, new_ptr });
+                        new_len = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{len_temp});
                     }
                     
                     const concat_temp = self.nextTemp();
@@ -2942,7 +2955,16 @@ pub const LLVMCodegen = struct {
                     }
                 }
 
-                const t = typeToLLVM(self.allocator, node.inferred_type orelse .{ .kind = .Any });
+                var inf_type = node.inferred_type orelse types.Type{ .kind = .Any };
+                if (inf_type.kind == .Any) {
+                    if (id.resolved_symbol) |sym| {
+                        if (sym.decl_node) |decl| {
+                            if (decl.inferred_type) |dt| inf_type = dt;
+                        }
+                    }
+                }
+                node.inferred_type = inf_type;
+                const t = typeToLLVM(self.allocator, inf_type);
                 const temp = self.nextTemp();
                 const temp_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{temp});
                 var var_symbol_name = id.name;
@@ -3023,18 +3045,16 @@ pub const LLVMCodegen = struct {
                     }
                 }
 
-                // Cast from string/slice/pointer to integer/char (i8/u8/char/etc.)
+                // Cast from string/slice to integer/char (i8/u8/char/etc.)
+                // Note: plain ptr -> i should NOT match here; it falls through to ptrtoint below
                 if (std.mem.startsWith(u8, target_type, "i") and 
                     (std.mem.eql(u8, source_type, "{ ptr, i64 }") or 
                      std.mem.eql(u8, source_type, "{ ptr, i64, i64 }") or 
-                     (std.mem.startsWith(u8, source_type, "%") and std.mem.endsWith(u8, source_type, "String")) or
-                     std.mem.eql(u8, source_type, "ptr"))) {
+                     (std.mem.startsWith(u8, source_type, "%") and std.mem.endsWith(u8, source_type, "String")))) {
                     
-                    const ptr_val = if (std.mem.eql(u8, source_type, "ptr")) operand_val else b: {
-                        const ptr_ext = self.nextTemp();
-                        try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_ext, source_type, operand_val });
-                        break :b try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ptr_ext});
-                    };
+                    const ptr_ext = self.nextTemp();
+                    try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_ext, source_type, operand_val });
+                    const ptr_val = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ptr_ext});
                     
                     const char_val = self.nextTemp();
                     try writer.print("  %t.{d} = load i8, ptr {s}\n", .{ char_val, ptr_val });
@@ -3093,6 +3113,10 @@ pub const LLVMCodegen = struct {
                     try writer.print("  {s} = sitofp {s} {s} to double\n", .{ temp_name, source_type, operand_val });
                 } else if ((std.mem.eql(u8, source_type, "i32") or std.mem.eql(u8, source_type, "i64")) and std.mem.eql(u8, target_type, "float")) {
                     try writer.print("  {s} = sitofp {s} {s} to float\n", .{ temp_name, source_type, operand_val });
+                } else if (std.mem.startsWith(u8, source_type, "double") and std.mem.startsWith(u8, target_type, "i")) {
+                    try writer.print("  {s} = fptosi {s} {s} to {s}\n", .{ temp_name, source_type, operand_val, target_type });
+                } else if (std.mem.startsWith(u8, source_type, "float") and std.mem.startsWith(u8, target_type, "i")) {
+                    try writer.print("  {s} = fptosi {s} {s} to {s}\n", .{ temp_name, source_type, operand_val, target_type });
                 } else if (std.mem.startsWith(u8, source_type, "i") and std.mem.eql(u8, target_type, "ptr")) {
                     try writer.print("  {s} = inttoptr {s} {s} to ptr\n", .{ temp_name, source_type, operand_val });
                 } else if (std.mem.eql(u8, source_type, "ptr") and std.mem.startsWith(u8, target_type, "i")) {
@@ -3253,6 +3277,68 @@ pub const LLVMCodegen = struct {
                             return load_name;
                         }
                         return temp_struct_name;
+                    } else if (callee_inferred.kind == .RawPointer and callee_inferred.payload != null and
+                        (callee_inferred.payload.?.kind == .Struct and callee_inferred.payload.?.struct_type != null)) {
+                        // RawPointer to struct: dispatch to __init__ method
+                        const st = callee_inferred.payload.?.struct_type.?;
+                        var init_method: ?*types.FunctionType = null;
+                        var init_mangled_name: []const u8 = "";
+                        for (st.methods) |cm| {
+                            if (std.mem.endsWith(u8, cm.name, "___init__")) {
+                                init_method = cm.type_kind.function;
+                                init_mangled_name = cm.name;
+                                break;
+                            }
+                        }
+
+                        if (init_method) |init_fn| {
+                            var args_str = std.ArrayList(u8).init(self.allocator);
+                            try args_str.appendSlice("ptr null, ptr "); // env parameter and self
+                            try args_str.appendSlice(cl_ptr);
+
+                            for (c.arguments, 0..) |arg, idx| {
+                                const arg_val = try self.genExpr(arg);
+                                var val_to_pass = arg_val;
+                                const arg_inferred = arg.inferred_type orelse types.Type{ .kind = .Any };
+                                const source_t = typeToLLVM(self.allocator, arg_inferred);
+
+                                var target_t = source_t;
+                                var expected_type = arg_inferred;
+                                if (idx + 1 < init_fn.param_types.len) {
+                                    expected_type = init_fn.param_types[idx + 1];
+                                    target_t = typeToLLVM(self.allocator, expected_type);
+                                }
+
+                                val_to_pass = try self.coerceType(val_to_pass, source_t, target_t);
+
+                                const sig = abi.getArgABI(expected_type, layout.Target.x86_64_linux);
+                                const align_req = layout.getAlign(expected_type, layout.Target.x86_64_linux);
+
+                                try args_str.appendSlice(", ");
+                                if (sig.mode == .ByVal) {
+                                    const temp_alloc = self.nextTemp();
+                                    try writer.print("  %t.{d} = alloca {s}, align {d}\n", .{ temp_alloc, target_t, align_req });
+                                    try writer.print("  store {s} {s}, ptr %t.{d}, align {d}\n", .{ target_t, val_to_pass, temp_alloc, align_req });
+                                    try std.fmt.format(args_str.writer(), "ptr byval({s}) %t.{d}", .{ target_t, temp_alloc });
+                                } else if (sig.mode == .Coerce) {
+                                    const temp_alloc = self.nextTemp();
+                                    try writer.print("  %t.{d} = alloca {s}, align {d}\n", .{ temp_alloc, target_t, align_req });
+                                    try writer.print("  store {s} {s}, ptr %t.{d}, align {d}\n", .{ target_t, val_to_pass, temp_alloc, align_req });
+                                    const cast_load = self.nextTemp();
+                                    try writer.print("  %t.{d} = load {s}, ptr %t.{d}, align {d}\n", .{ cast_load, sig.llvm_type, temp_alloc, align_req });
+                                    try std.fmt.format(args_str.writer(), "{s} %t.{d}", .{ sig.llvm_type, cast_load });
+                                } else {
+                                    try std.fmt.format(args_str.writer(), "{s} {s}", .{ target_t, val_to_pass });
+                                }
+                            }
+
+                            if (!self.defined_functions.contains(init_mangled_name)) {
+                                try self.declareExternalFunctionFromType(init_mangled_name, types.Type{ .kind = .Function, .function = init_fn });
+                            }
+
+                            try writer.print("  call void @{s}({s})\n", .{ init_mangled_name, args_str.items });
+                        }
+                        return cl_ptr;
                     } else {
                         // Extract function pointer and environment pointer from fat pointer { ptr, ptr }
                         const func_ptr = self.nextTemp();
@@ -3329,8 +3415,8 @@ pub const LLVMCodegen = struct {
                             return call_temp_name;
                         }
                     }
-                } else if (c.callee.node_type == .Identifier or is_module_call) {
-                    var func_name = if (is_module_call) module_func_name.? else c.callee.data.Identifier.name;
+                } else if (c.callee.node_type == .Identifier or is_module_call or (c.callee.node_type == .IndexExpr and c.callee.data.IndexExpr.object.node_type == .Identifier)) {
+                    var func_name = if (is_module_call) module_func_name.? else if (c.callee.node_type == .Identifier) c.callee.data.Identifier.name else c.callee.data.IndexExpr.object.data.Identifier.name;
                     const is_struct = if (c.callee.node_type == .Identifier)
                         (if (c.callee.data.Identifier.resolved_symbol) |sym| sym.kind == .Struct else false)
                     else
@@ -3383,6 +3469,16 @@ pub const LLVMCodegen = struct {
                                 is_str_flag = getDictStringKeyFlag(k_type);
                             }
                         }
+                        if (k_size == 8 and is_str_flag == 0 and c.callee.node_type == .IndexExpr) {
+                            const idx_node = c.callee.data.IndexExpr.index;
+                            if (idx_node.node_type == .ListLiteral and idx_node.data.ListLiteral.elements.len >= 1) {
+                                const k_node = idx_node.data.ListLiteral.elements[0];
+                                if (k_node.node_type == .Identifier and std.mem.eql(u8, k_node.data.Identifier.name, "String")) {
+                                    k_size = 24;
+                                    is_str_flag = 2;
+                                }
+                            }
+                        }
                         const dict_ptr = self.nextTemp();
                         const dict_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{dict_ptr});
                         try writer.print("  {s} = call ptr @__mantiq_dict_create(i32 {d}, i32 {d}, i32 {d})\n", .{ dict_name, k_size, v_size, is_str_flag });
@@ -3411,57 +3507,44 @@ pub const LLVMCodegen = struct {
                         try writer.print("  call void @quantum_CNOT(i32 {s}, i32 {s})\n", .{ try self.genExpr(c.arguments[0]), try self.genExpr(c.arguments[1]) });
                         return "null";
                     } else if (std.mem.eql(u8, func_name, "make") and !is_user_func) {
+                        var base_size: usize = 1;
                         if (node.inferred_type) |inf_type| {
-                            if (inf_type.kind == .RawPointer) {
-                                var base_size: usize = 1;
-                                if (c.generic_args != null and c.generic_args.?.len > 0) {
-                                    base_size = types.getTypeSize(inf_type.payload.?.*);
-                                }
-                                
-                                var capacity_val: []const u8 = "1";
-                                var capacity_type: types.Type = .{ .kind = .I64 };
-                                if (c.arguments.len > 0) {
-                                    const cap_arg = c.arguments[0];
-                                    if (cap_arg.node_type == .KeywordArg) {
-                                        capacity_val = try self.genExpr(cap_arg.data.KeywordArg.value);
-                                        capacity_type = cap_arg.data.KeywordArg.value.inferred_type orelse .{ .kind = .I32 };
-                                    } else {
-                                        capacity_val = try self.genExpr(cap_arg);
-                                        capacity_type = cap_arg.inferred_type orelse .{ .kind = .I32 };
-                                    }
-                                }
-                                
-                                // Ensure capacity is i64
-                                var i64_cap_val = capacity_val;
-                                if (capacity_type.kind == .I32) {
-                                    const ext_temp = self.nextTemp();
-                                    try writer.print("  %t.{d} = sext i32 {s} to i64\n", .{ ext_temp, capacity_val });
-                                    i64_cap_val = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ext_temp});
-                                }
-                                
-                                const total_size = self.nextTemp();
-                                try writer.print("  %t.{d} = mul i64 {s}, {d}\n", .{ total_size, i64_cap_val, base_size });
-                                
-                                const alloc_ptr = self.nextTemp();
-                                try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 %t.{d})\n", .{ alloc_ptr, total_size });
-                                
-                                const ptr_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{alloc_ptr});
-                                try self.registerTemp(ptr_name, ptr_name);
-                                return ptr_name;
+                            if (inf_type.kind == .RawPointer and inf_type.payload != null) {
+                                base_size = types.getTypeSize(inf_type.payload.?.*);
                             }
                         }
                         
-                        // Fallback for Mantiq dynamic make
-                        const call_temp = self.nextTemp();
-                        try writer.print("  %t.{d} = call {{ ptr, ptr }} @make()\n", .{call_temp});
+                        var capacity_val: []const u8 = "1";
+                        var capacity_type: types.Type = .{ .kind = .I64 };
+                        if (c.arguments.len > 0) {
+                            const cap_arg = c.arguments[0];
+                            if (cap_arg.node_type == .KeywordArg) {
+                                capacity_val = try self.genExpr(cap_arg.data.KeywordArg.value);
+                                capacity_type = cap_arg.data.KeywordArg.value.inferred_type orelse .{ .kind = .I32 };
+                            } else {
+                                capacity_val = try self.genExpr(cap_arg);
+                                capacity_type = cap_arg.inferred_type orelse .{ .kind = .I32 };
+                            }
+                        }
                         
-                        const fat_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{call_temp});
-                        const extract_temp = self.nextTemp();
-                        try writer.print("  %t.{d} = extractvalue {{ ptr, ptr }} %t.{d}, 0\n", .{ extract_temp, call_temp });
-                        const heap_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{extract_temp});
-                        try self.registerTemp(fat_name, heap_name);
+                        // Ensure capacity is i64
+                        var i64_cap_val = capacity_val;
+                        const cap_llvm = typeToLLVM(self.allocator, capacity_type);
+                        if (!std.mem.eql(u8, cap_llvm, "i64")) {
+                            const ext_temp = self.nextTemp();
+                            try writer.print("  %t.{d} = zext {s} {s} to i64\n", .{ ext_temp, cap_llvm, capacity_val });
+                            i64_cap_val = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ext_temp});
+                        }
                         
-                        return fat_name;
+                        const total_size = self.nextTemp();
+                        try writer.print("  %t.{d} = mul i64 {s}, {d}\n", .{ total_size, i64_cap_val, base_size });
+                        
+                        const alloc_ptr = self.nextTemp();
+                        try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 %t.{d})\n", .{ alloc_ptr, total_size });
+                        
+                        const ptr_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{alloc_ptr});
+                        try self.registerTemp(ptr_name, ptr_name);
+                        return ptr_name;
                     } else if (std.mem.eql(u8, func_name, "drop") and !is_user_func) {
                         const ptr_val = try self.genExpr(c.arguments[0]);
                         try writer.print("  call void @mantiq_free(ptr {s})\n", .{ptr_val});
@@ -3618,7 +3701,18 @@ pub const LLVMCodegen = struct {
                         return "null";
                     } else if (std.mem.eql(u8, func_name, "Some")) {
                         const val = try self.genExpr(c.arguments[0]);
-                        const val_t = typeToLLVM(self.allocator, c.arguments[0].inferred_type orelse .{ .kind = .Any });
+                        const arg_type = c.arguments[0].inferred_type orelse types.Type{ .kind = .Any };
+                        const val_t = typeToLLVM(self.allocator, arg_type);
+                        // For pointer types, store directly as val_ptr (no box needed)
+                        // to avoid use-after-free when the OptionLayout is copied into a list
+                        if (arg_type.kind == .RawPointer) {
+                            const fat_temp1 = self.nextTemp();
+                            try writer.print("  %t.{d} = insertvalue {{ i8, ptr }} undef, i8 1, 0\n", .{fat_temp1});
+                            const fat_temp2 = self.nextTemp();
+                            try writer.print("  %t.{d} = insertvalue {{ i8, ptr }} %t.{d}, ptr {s}, 1\n", .{ fat_temp2, fat_temp1, val });
+                            const fat_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat_temp2});
+                            return fat_name;
+                        }
                         const box_ptr = self.nextTemp();
                         try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 32)\n", .{box_ptr});
                         try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ val_t, val, box_ptr });
@@ -3633,7 +3727,18 @@ pub const LLVMCodegen = struct {
                         return fat_name;
                     } else if (std.mem.eql(u8, func_name, "Ok")) {
                         const val = try self.genExpr(c.arguments[0]);
-                        const val_t = typeToLLVM(self.allocator, c.arguments[0].inferred_type orelse .{ .kind = .Any });
+                        const arg_type = c.arguments[0].inferred_type orelse types.Type{ .kind = .Any };
+                        const val_t = typeToLLVM(self.allocator, arg_type);
+                        if (arg_type.kind == .RawPointer) {
+                            const fat_temp1 = self.nextTemp();
+                            try writer.print("  %t.{d} = insertvalue {{ i8, ptr, ptr }} undef, i8 0, 0\n", .{fat_temp1});
+                            const fat_temp2 = self.nextTemp();
+                            try writer.print("  %t.{d} = insertvalue {{ i8, ptr, ptr }} %t.{d}, ptr {s}, 1\n", .{ fat_temp2, fat_temp1, val });
+                            const fat_temp3 = self.nextTemp();
+                            try writer.print("  %t.{d} = insertvalue {{ i8, ptr, ptr }} %t.{d}, ptr null, 2\n", .{ fat_temp3, fat_temp2 });
+                            const fat_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat_temp3});
+                            return fat_name;
+                        }
                         const box_ptr = self.nextTemp();
                         try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 32)\n", .{box_ptr});
                         try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ val_t, val, box_ptr });
@@ -3650,7 +3755,18 @@ pub const LLVMCodegen = struct {
                         return fat_name;
                     } else if (std.mem.eql(u8, func_name, "Err")) {
                         const val = try self.genExpr(c.arguments[0]);
-                        const val_t = typeToLLVM(self.allocator, c.arguments[0].inferred_type orelse .{ .kind = .Any });
+                        const arg_type = c.arguments[0].inferred_type orelse types.Type{ .kind = .Any };
+                        const val_t = typeToLLVM(self.allocator, arg_type);
+                        if (arg_type.kind == .RawPointer) {
+                            const fat_temp1 = self.nextTemp();
+                            try writer.print("  %t.{d} = insertvalue {{ i8, ptr, ptr }} undef, i8 1, 0\n", .{fat_temp1});
+                            const fat_temp2 = self.nextTemp();
+                            try writer.print("  %t.{d} = insertvalue {{ i8, ptr, ptr }} %t.{d}, ptr null, 1\n", .{ fat_temp2, fat_temp1 });
+                            const fat_temp3 = self.nextTemp();
+                            try writer.print("  %t.{d} = insertvalue {{ i8, ptr, ptr }} %t.{d}, ptr {s}, 2\n", .{ fat_temp3, fat_temp2, val });
+                            const fat_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat_temp3});
+                            return fat_name;
+                        }
                         const box_ptr = self.nextTemp();
                         try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 32)\n", .{box_ptr});
                         try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ val_t, val, box_ptr });
@@ -3964,7 +4080,7 @@ pub const LLVMCodegen = struct {
                         }
 
                         var actual_args = std.ArrayList(*ast.Node).init(self.allocator);
-                        if (is_variadic and variadic_start <= c.arguments.len) {
+                        if (is_variadic and !is_extern and variadic_start <= c.arguments.len) {
                             for (c.arguments[0..variadic_start]) |arg| {
                                 try actual_args.append(arg);
                             }
@@ -3995,20 +4111,31 @@ pub const LLVMCodegen = struct {
                         for (processed_args, 0..) |arg, i| {
                             if (needs_env or i > 0) try arg_str.appendSlice(", ");
                             var arg_val = try self.genExpr(arg);
-                            const inferred: types.Type = arg.inferred_type orelse types.Type{ .kind = .Any };
+                            var inferred: types.Type = arg.inferred_type orelse types.Type{ .kind = .Any };
+                            if (inferred.kind == .Any and arg.node_type == .Identifier) {
+                                if (arg.data.Identifier.resolved_symbol) |sym| {
+                                    if (sym.decl_node) |decl| {
+                                        if (decl.inferred_type) |dt| inferred = dt;
+                                    }
+                                }
+                            }
                             const source_t = typeToLLVM(self.allocator, inferred);
                             var target_type = inferred;
                             if (c.callee.inferred_type) |callee_t| {
                                 if (callee_t.kind == .Function and callee_t.function != null) {
                                     const params = callee_t.function.?.param_types;
-                                    if (i < params.len) {
+                                    const is_var = callee_t.function.?.is_variadic;
+                                    const fixed_count = if (is_var and params.len > 0) params.len - 1 else params.len;
+                                    if (i < fixed_count) {
                                         target_type = params[i];
+                                    } else if (is_extern) {
+                                        target_type = inferred;
                                     }
                                 }
                             }
                             const target_t = typeToLLVM(self.allocator, target_type);
                             arg_val = try self.coerceType(arg_val, source_t, target_t);
-                            const sig = abi.getArgABI(target_type, layout.Target.x86_64_linux);
+                            const sig = if (is_extern) abi.ABISignature{ .mode = .Direct, .llvm_type = target_t, .is_struct = false } else abi.getArgABI(target_type, layout.Target.x86_64_linux);
                             const align_req = layout.getAlign(target_type, layout.Target.x86_64_linux);
                             
                             if (sig.mode == .ByVal) {
@@ -5267,6 +5394,7 @@ pub const LLVMCodegen = struct {
             .BinaryExpr => |*b| {
                 if (std.mem.eql(u8, b.operator, "=")) {
                     var right_val = try self.genExpr(b.right);
+                    self.consumeTemp(right_val);
                     const t = typeToLLVM(self.allocator, b.left.inferred_type orelse .{ .kind = .Any });
                     
                     if (b.right.node_type == .StringLiteral and std.mem.eql(u8, t, "i8")) {
@@ -5291,7 +5419,7 @@ pub const LLVMCodegen = struct {
                         const ptr_val = try self.genLValue(b.left);
                         try writer.print("  store {s} {s}, ptr {s}\n", .{ t, right_val, ptr_val });
                     } else {
-                        std.debug.print("Unsupported left hand side for assignment\n", .{});
+                        std.debug.print("Unsupported left hand side for assignment: node_type={}\n", .{b.left.node_type});
                         return error.UnsupportedNode;
                     }
                     return right_val;
@@ -5410,13 +5538,31 @@ pub const LLVMCodegen = struct {
                         }
                         try writer.print("  {s} = zext i1 {s} to i8\n", .{ res_name, cmp_name });
                     } else {
-                        const inst = if (std.mem.eql(u8, b.operator, "==")) (if (is_float) "fcmp oeq" else "icmp eq") else if (std.mem.eql(u8, b.operator, "!=")) (if (is_float) "fcmp one" else "icmp ne") else if (std.mem.eql(u8, b.operator, "<")) (if (is_float) "fcmp olt" else "icmp slt") else if (std.mem.eql(u8, b.operator, ">")) (if (is_float) "fcmp ogt" else "icmp sgt") else if (std.mem.eql(u8, b.operator, "<=")) (if (is_float) "fcmp ole" else "icmp sle") else if (std.mem.eql(u8, b.operator, ">=")) (if (is_float) "fcmp oge" else "icmp sge") else unreachable;
+                        // ── Enum comparison ─────────────────────────────────────────────────────────
+                        const is_enum = b.left.inferred_type != null and b.left.inferred_type.?.kind == .Enum;
+                        if (is_enum) {
+                            // Enums are structs { i32, ... } in LLVM; extract the i32 tag for icmp
+                            const left_tag = self.nextTemp();
+                            try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ left_tag, t, left_val });
+                            const right_tag = self.nextTemp();
+                            try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ right_tag, t, right_val });
 
-                        const cmp_temp = self.nextTemp();
-                        const cmp_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{cmp_temp});
-                        try writer.print("  {s} = {s} {s} {s}, {s}\n", .{ cmp_name, inst, t, left_val, right_val });
+                            const inst = if (std.mem.eql(u8, b.operator, "==")) "icmp eq" else if (std.mem.eql(u8, b.operator, "!=")) "icmp ne" else if (std.mem.eql(u8, b.operator, "<")) "icmp slt" else if (std.mem.eql(u8, b.operator, ">")) "icmp sgt" else if (std.mem.eql(u8, b.operator, "<=")) "icmp sle" else if (std.mem.eql(u8, b.operator, ">=")) "icmp sge" else unreachable;
 
-                        try writer.print("  {s} = zext i1 {s} to i8\n", .{ res_name, cmp_name });
+                            const cmp_temp = self.nextTemp();
+                            const cmp_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{cmp_temp});
+                            try writer.print("  {s} = {s} i32 %t.{d}, %t.{d}\n", .{ cmp_name, inst, left_tag, right_tag });
+
+                            try writer.print("  {s} = zext i1 {s} to i8\n", .{ res_name, cmp_name });
+                        } else {
+                            const inst = if (std.mem.eql(u8, b.operator, "==")) (if (is_float) "fcmp oeq" else "icmp eq") else if (std.mem.eql(u8, b.operator, "!=")) (if (is_float) "fcmp one" else "icmp ne") else if (std.mem.eql(u8, b.operator, "<")) (if (is_float) "fcmp olt" else "icmp slt") else if (std.mem.eql(u8, b.operator, ">")) (if (is_float) "fcmp ogt" else "icmp sgt") else if (std.mem.eql(u8, b.operator, "<=")) (if (is_float) "fcmp ole" else "icmp sle") else if (std.mem.eql(u8, b.operator, ">=")) (if (is_float) "fcmp oge" else "icmp sge") else unreachable;
+
+                            const cmp_temp = self.nextTemp();
+                            const cmp_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{cmp_temp});
+                            try writer.print("  {s} = {s} {s} {s}, {s}\n", .{ cmp_name, inst, t, left_val, right_val });
+
+                            try writer.print("  {s} = zext i1 {s} to i8\n", .{ res_name, cmp_name });
+                        }
                     }
                 } else {
                     return "null";

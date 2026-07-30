@@ -166,48 +166,49 @@ pub const TypeChecker = struct {
                     }
                 }
                 
-                if (imp.module_ast) |sub_ast| {
-                    if (std.mem.eql(u8, imp.target, "std.string")) {
-                        if (imp.imported_symbols.len == 0) {
-                            self.is_string_imported = true;
-                        } else {
-                            for (imp.imported_symbols) |sym| {
-                                if (std.mem.eql(u8, sym, "String")) self.is_string_imported = true;
-                            }
+                if (std.mem.eql(u8, imp.target, "std.string")) {
+                    if (imp.imported_symbols.len == 0) {
+                        self.is_string_imported = true;
+                    } else {
+                        for (imp.imported_symbols) |sym| {
+                            if (std.mem.eql(u8, sym, "String")) self.is_string_imported = true;
                         }
                     }
+                }
 
+                if (imp.module_ast) |sub_ast| {
                     if (!self.typechecked_modules.contains(imp.target)) {
                         try self.typechecked_modules.put(imp.target, {});
                         try self.checkProgram(sub_ast);
                     }
+                }
 
-                    if (imp.imported_symbols.len > 0) {
-                        for (imp.imported_symbols) |sym_name| {
-                            var mangled_prefix = std.ArrayList(u8).init(self.allocator);
-                            defer mangled_prefix.deinit();
-                            try mangled_prefix.appendSlice("mantiq_");
-                            for (imp.target) |c| {
-                                if (c == '/') {
-                                    try mangled_prefix.appendSlice("__");
-                                } else if (c == '.') {
-                                    try mangled_prefix.appendSlice("_");
-                                } else {
-                                    try mangled_prefix.append(c);
-                                }
+                if (imp.imported_symbols.len > 0) {
+                    for (imp.imported_symbols) |sym_name| {
+                        var mangled_prefix = std.ArrayList(u8).init(self.allocator);
+                        defer mangled_prefix.deinit();
+                        try mangled_prefix.appendSlice("mantiq_");
+                        for (imp.target) |c| {
+                            if (c == '/') {
+                                try mangled_prefix.appendSlice("__");
+                            } else if (c == '.') {
+                                try mangled_prefix.appendSlice("_");
+                            } else {
+                                try mangled_prefix.append(c);
                             }
-                            const mangled = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ mangled_prefix.items, sym_name });
-                            defer self.allocator.free(mangled);
+                        }
+                        const mangled = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ mangled_prefix.items, sym_name });
+                        defer self.allocator.free(mangled);
 
-                            if (self.struct_types.get(mangled)) |st| {
-                                try self.struct_types.put(sym_name, st);
-                            }
-                            if (self.enum_types.get(mangled)) |et| {
-                                try self.enum_types.put(sym_name, et);
-                            }
-                            if (self.union_types.get(mangled)) |ut| {
-                                try self.union_types.put(sym_name, ut);
-                            }
+                        std.debug.print("Import lookup mangled: '{s}'\n", .{mangled});
+                        if (self.struct_types.get(mangled)) |st| {
+                            try self.struct_types.put(sym_name, st);
+                        }
+                        if (self.enum_types.get(mangled)) |et| {
+                            try self.enum_types.put(sym_name, et);
+                        }
+                        if (self.union_types.get(mangled)) |ut| {
+                            try self.union_types.put(sym_name, ut);
                         }
                     }
                 }
@@ -524,7 +525,7 @@ pub const TypeChecker = struct {
                             if (v.type_annots[i]) |annot| {
                                 decl_type = try self.validateType(annot);
                                 if (decl_type.kind == .Unknown) {
-                                    std.debug.print("Type Error: Unknown type annotation '{s}'\n", .{annot.name});
+                                    std.debug.print("Type Error: Unknown type annotation '{s}' at line {d}:{d}\n", .{annot.name, node.span.start_row + 1, node.span.start_col + 1});
                                     return error.UnknownType;
                                 }
                             }
@@ -1967,6 +1968,7 @@ pub const TypeChecker = struct {
                 };
                 // Assign early for recursive references (like self as Vector2)
                 node.inferred_type = .{ .kind = .Struct, .struct_type = st };
+                std.debug.print("Registering struct: '{s}'\n", .{struct_name});
                 try self.struct_types.put(struct_name, st);
                 if (node.module_name) |_| {
                     try self.struct_types.put(s.name, st);
@@ -2044,6 +2046,12 @@ pub const TypeChecker = struct {
                     });
                 }
                 st.fields = try fields.toOwnedSlice();
+                if (std.mem.endsWith(u8, struct_name, "Symbol")) {
+                    std.debug.print("Symbol fields count: {d}, total size: {d}\n", .{ st.fields.len, types.getTypeSize(.{ .kind = .Struct, .struct_type = st }) });
+                    for (st.fields) |f| {
+                        std.debug.print("  field '{s}': size {d}\n", .{ f.name, types.getTypeSize(f.type_kind) });
+                    }
+                }
                 
                 for (s.methods) |method| {
                     try self.checkNode(method);

@@ -30,18 +30,10 @@
 #include <pthread.h>
 #include <time.h>
 
-#if __has_include(<mimalloc.h>)
-    #include <mimalloc.h>
-    #define sys_malloc mi_malloc
-    #define sys_free mi_free
-    #define sys_realloc mi_realloc
-    #define ALLOCATOR_NAME "mimalloc"
-#else
-    #define sys_malloc malloc
-    #define sys_free free
-    #define sys_realloc realloc
-    #define ALLOCATOR_NAME "libc-malloc"
-#endif
+#define sys_malloc malloc
+#define sys_free free
+#define sys_realloc realloc
+#define ALLOCATOR_NAME "libc-malloc"
 
 // Simulated thread pool / parallel loop execution
 void __mantiq_parallel_for(int start, int end, void (*closure)(void*, int), void* env) {
@@ -363,10 +355,15 @@ void* __mantiq_dict_get_or_insert(MantiqDict* d, void* key, uint32_t hash) {
     while (d->occupied[idx]) {
         if (d->hashes[idx] == hash) {
             int match = 0;
-            if (d->is_string_key) {
+            if (d->is_string_key == 1) {
                 struct MantiqStr { const char* ptr; int64_t len; };
                 struct MantiqStr* s1 = (struct MantiqStr*)(d->keys + idx * d->key_size);
                 struct MantiqStr* s2 = (struct MantiqStr*)key;
+                match = (s1->len == s2->len && memcmp(s1->ptr, s2->ptr, s1->len) == 0);
+            } else if (d->is_string_key == 2) {
+                struct MantiqHeapStr { const char* ptr; int64_t len; int64_t cap; };
+                struct MantiqHeapStr* s1 = (struct MantiqHeapStr*)(d->keys + idx * d->key_size);
+                struct MantiqHeapStr* s2 = (struct MantiqHeapStr*)key;
                 match = (s1->len == s2->len && memcmp(s1->ptr, s2->ptr, s1->len) == 0);
             } else {
                 match = memcmp(d->keys + idx * d->key_size, key, d->key_size) == 0;

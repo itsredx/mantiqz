@@ -17,6 +17,7 @@ const runtime_c = @embedFile("runtime.c");
 
 pub const AOTCompiler = struct {
     allocator: std.mem.Allocator,
+    library_dirs: [][]const u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator) AOTCompiler {
         return .{
@@ -54,8 +55,23 @@ pub const AOTCompiler = struct {
         if (!as_object) {
             try args.append(runtime_filename);
         }
-        try args.append("-O3");
-        
+        try args.append("-O2");
+        try args.append("-fno-sanitize=address");
+
+        var allocated_flags = std.ArrayList([]const u8).init(self.allocator);
+        defer {
+            for (allocated_flags.items) |flag| {
+                self.allocator.free(flag);
+            }
+            allocated_flags.deinit();
+        }
+
+        for (self.library_dirs) |dir| {
+            const lflag = try std.fmt.allocPrint(self.allocator, "-L{s}", .{dir});
+            try allocated_flags.append(lflag);
+            try args.append(lflag);
+        }
+
         if (as_object) {
             try args.append("-c");
             const obj_filename = try std.fmt.allocPrint(self.allocator, "{s}.o", .{name_prefix});
@@ -65,15 +81,6 @@ pub const AOTCompiler = struct {
         } else {
             try args.append("-o");
             try args.append(name_prefix);
-            try args.append("-lmimalloc");
-        }
-        
-        var allocated_flags = std.ArrayList([]const u8).init(self.allocator);
-        defer {
-            for (allocated_flags.items) |flag| {
-                self.allocator.free(flag);
-            }
-            allocated_flags.deinit();
         }
         
         if (link_targets) |targets| {

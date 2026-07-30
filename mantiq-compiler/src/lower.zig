@@ -1020,16 +1020,19 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
                 } else if (std.mem.eql(u8, mod_text, "inline")) {
                     is_inline = true;
                 }
-            } else if (std.mem.eql(u8, c_type, "named_function")) {
+            } else if (std.mem.eql(u8, c_type, "named_function") or std.mem.eql(u8, c_type, "function_definition")) {
                 named_fn_node = child;
             }
         }
 
         var name: []const u8 = "unknown";
-        // The first named child of 'named_function' is usually the identifier
-        const name_child = c.ts_node_child(named_fn_node, 0);
-        if (c.ts_node_is_named(name_child)) {
-            name = self.extractText(name_child);
+        const nf_child_count = c.ts_node_child_count(named_fn_node);
+        for (0..nf_child_count) |i| {
+            const child = c.ts_node_child(named_fn_node, @as(u32, @intCast(i)));
+            if (c.ts_node_is_named(child) and std.mem.eql(u8, std.mem.span(c.ts_node_type(child)), "identifier")) {
+                name = self.extractText(child);
+                break;
+            }
         }
 
         // We will fake parsing the parameters and body for the sake of the Sema test
@@ -1045,7 +1048,6 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
         var generic_params_list: ?std.ArrayList([]const u8) = null;
 
         // Scan children of named_function to find parameters and body
-        const nf_child_count = c.ts_node_child_count(named_fn_node);
         for (0..nf_child_count) |i| {
             const child = c.ts_node_child(named_fn_node, @as(u32, @intCast(i)));
             const c_type = std.mem.span(c.ts_node_type(child));
@@ -1071,9 +1073,32 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
                 const param_count = c.ts_node_child_count(child);
                 for (0..param_count) |p_i| {
                     const p_child = c.ts_node_child(child, @as(u32, @intCast(p_i)));
-                    if (std.mem.eql(u8, std.mem.span(c.ts_node_type(p_child)), "param_decl")) {
-                        const id_node = c.ts_node_child_by_field_name(p_child, "name", 4);
-                        const type_node = c.ts_node_child_by_field_name(p_child, "type", 4);
+                    const p_type_str = std.mem.span(c.ts_node_type(p_child));
+                    if (std.mem.eql(u8, p_type_str, "param_decl") or std.mem.eql(u8, p_type_str, "typed_var")) {
+                        var id_node = c.ts_node_child_by_field_name(p_child, "name", 4);
+                        if (c.ts_node_is_null(id_node)) {
+                            const p_cc = c.ts_node_child_count(p_child);
+                            for (0..p_cc) |p_ci| {
+                                const sub_c = c.ts_node_child(p_child, @as(u32, @intCast(p_ci)));
+                                const sub_t = std.mem.span(c.ts_node_type(sub_c));
+                                if (std.mem.eql(u8, sub_t, "identifier") or std.mem.eql(u8, sub_t, "self_reference")) {
+                                    id_node = sub_c;
+                                    break;
+                                }
+                            }
+                        }
+                        var type_node = c.ts_node_child_by_field_name(p_child, "type", 4);
+                        if (c.ts_node_is_null(type_node)) {
+                            const p_cc = c.ts_node_child_count(p_child);
+                            for (0..p_cc) |p_ci| {
+                                const sub_c = c.ts_node_child(p_child, @as(u32, @intCast(p_ci)));
+                                const sub_t = std.mem.span(c.ts_node_type(sub_c));
+                                if (std.mem.eql(u8, sub_t, "type_annotation")) {
+                                    type_node = sub_c;
+                                    break;
+                                }
+                            }
+                        }
                         const default_node = c.ts_node_child_by_field_name(p_child, "default_value", 13);
                         ast.debugPrint("DEBUG: param_decl name field exists: {}, type field exists: {}\n", .{!c.ts_node_is_null(id_node), !c.ts_node_is_null(type_node)});
                         if (!c.ts_node_is_null(id_node)) ast.debugPrint("DEBUG: param name is '{s}'\n", .{self.extractText(id_node)});
@@ -1328,11 +1353,20 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
         const count = c.ts_node_child_count(ts_node);
         if (count < 4) return error.InvalidSyntax;
 
-        // Tree-sitter struct:
-        // object [ expression ]
-        const object_node = c.ts_node_child(ts_node, 0);
-        // child 1 is '['
-        const index_node = c.ts_node_child(ts_node, 2);
+        var object_node = c.ts_node_child_by_field_name(ts_node, "object", 6);
+        if (c.ts_node_is_null(object_node)) object_node = c.ts_node_child(ts_node, 0);
+        
+        var index_node = c.ts_node_child_by_field_name(ts_node, "index", 5);
+        if (c.ts_node_is_null(index_node)) {
+            for (1..count) |i| {
+                const sub_c = c.ts_node_child(ts_node, @as(u32, @intCast(i)));
+                const sub_t = std.mem.span(c.ts_node_type(sub_c));
+                if (!std.mem.eql(u8, sub_t, "[") and !std.mem.eql(u8, sub_t, "]")) {
+                    index_node = sub_c;
+                    break;
+                }
+            }
+        }
         
         const object = try self.lowerNode(object_node);
         const index = try self.lowerNode(index_node);

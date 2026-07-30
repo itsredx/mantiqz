@@ -93,6 +93,8 @@ pub fn main() !void {
 
         var output_file: ?[]const u8 = null;
         var target: ?[]const u8 = null;
+        var lib_dirs = std.ArrayList([]const u8).init(allocator);
+        defer lib_dirs.deinit();
 
         var arg_idx: usize = 3;
         while (arg_idx < args.len) : (arg_idx += 1) {
@@ -111,6 +113,13 @@ pub fn main() !void {
                 }
                 arg_idx += 1;
                 target = args[arg_idx];
+            } else if (std.mem.eql(u8, arg, "--lib-dir")) {
+                if (arg_idx + 1 >= args.len) {
+                    std.debug.print("Error: Missing argument for '--lib-dir' option.\n", .{});
+                    std.process.exit(1);
+                }
+                arg_idx += 1;
+                try lib_dirs.append(args[arg_idx]);
             } else if (std.mem.eql(u8, arg, "--show-ir") or std.mem.eql(u8, arg, "--debug")) {
                 // Handled
             } else {
@@ -132,7 +141,7 @@ pub fn main() !void {
             }
         };
 
-        try doBuild(allocator, input_file, final_output, target, default_mode);
+        try doBuild(allocator, input_file, final_output, target, default_mode, lib_dirs.items);
         return;
     } else if (std.mem.eql(u8, command, "run")) {
         if (args.len < 3) {
@@ -164,7 +173,7 @@ fn printHelp(writer: anytype) !void {
         \\Mantiq / Nizam Compiler Command Line Interface
         \\
         \\Usage:
-        \\  mantiq build <input_file> [-o <output_file>] [-target <target>] [--show-ir] [--debug]
+        \\  mantiq build <input_file> [-o <output_file>] [-target <target>] [--lib-dir <dir>] [--show-ir] [--debug]
         \\  mantiq run <input_file> [--show-ir] [--debug] [args...]
         \\  mantiq repl [nizam] [--show-ir] [--debug]
         \\  mantiq test
@@ -172,6 +181,7 @@ fn printHelp(writer: anytype) !void {
         \\Options:
         \\  -o <output_file>   Specify the output binary filename (for 'build' command)
         \\  -target <target>   Specify the target architecture for cross-compilation
+        \\  --lib-dir <dir>    Add directory to library search path (for 'build' command)
         \\  --show-ir          Print generated LLVM IR to stdout during compilation
         \\  --debug            Enable compiler debug logging
         \\  -h, --help         Show this help message
@@ -233,7 +243,7 @@ fn runPipeline(
     return ll_ir;
 }
 
-fn doBuild(allocator: std.mem.Allocator, input_path: []const u8, output_path: []const u8, target: ?[]const u8, default_mode: ast.LanguageMode) !void {
+fn doBuild(allocator: std.mem.Allocator, input_path: []const u8, output_path: []const u8, target: ?[]const u8, default_mode: ast.LanguageMode, lib_dirs: [][]const u8) !void {
     var file = std.fs.cwd().openFile(input_path, .{}) catch |err| {
         std.debug.print("Error: Failed to open input file '{s}': {}\n", .{input_path, err});
         std.process.exit(1);
@@ -261,6 +271,7 @@ fn doBuild(allocator: std.mem.Allocator, input_path: []const u8, output_path: []
     };
 
     var aot_compiler = aot.AOTCompiler.init(allocator);
+    aot_compiler.library_dirs = lib_dirs;
     aot_compiler.compile(ll_ir, output_path, target, false, if (link_targets.items.len > 0) link_targets.items else null) catch |err| {
         std.debug.print("AOT Compilation failed: {}\n", .{err});
         std.process.exit(1);
