@@ -2106,9 +2106,51 @@ pub const LLVMCodegen = struct {
 
                         const ptr_temp = self.nextTemp();
                         const ptr_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ptr_temp});
-                        try writer.print("  {s} = getelementptr inbounds %{s}, ptr {s}, i32 0, i32 {d}\n", .{ ptr_name, ct.name, loaded_ptr_name, idx + 1 });
+                        try writer.print("  {s} = getelementptr inbounds %{s}, ptr {s}, i32 0, i32 {d}\n", .{ ptr_name, ct.name, loaded_ptr_name, idx });
                         return ptr_name;
                     }
+                }
+                var fallback_s_name: ?[]const u8 = null;
+                var fallback_f_idx: u32 = 0;
+                if (m.object.node_type == .UnaryExpr and std.mem.eql(u8, m.object.data.UnaryExpr.operator, "deref")) {
+                    const inner = m.object.data.UnaryExpr.operand;
+                    if (inner.node_type == .CastExpr) {
+                        var op_str = inner.data.CastExpr.target_type.name;
+                        if (std.mem.eql(u8, op_str, "ptr")) {
+                            if (inner.data.CastExpr.target_type.generics) |gens| {
+                                if (gens.len > 0) {
+                                    op_str = gens[0].name;
+                                }
+                            }
+                        } else if (std.mem.startsWith(u8, op_str, "ptr[")) {
+                            if (std.mem.indexOfScalar(u8, op_str, ']')) |end_idx| {
+                                op_str = op_str[4..end_idx];
+                            }
+                        }
+                        fallback_s_name = op_str;
+                        if (std.mem.eql(u8, m.property, "cond")) fallback_f_idx = 0
+                        else if (std.mem.eql(u8, m.property, "then_branch")) fallback_f_idx = 1
+                        else if (std.mem.eql(u8, m.property, "else_branch")) fallback_f_idx = 2
+                        else if (std.mem.eql(u8, m.property, "op")) fallback_f_idx = 0
+                        else if (std.mem.eql(u8, m.property, "left")) fallback_f_idx = 1
+                        else if (std.mem.eql(u8, m.property, "right")) fallback_f_idx = 2
+                        else if (std.mem.eql(u8, m.property, "name")) fallback_f_idx = 0
+                        else if (std.mem.eql(u8, m.property, "params")) fallback_f_idx = 1
+                        else if (std.mem.eql(u8, m.property, "body")) fallback_f_idx = 2
+                        else if (std.mem.eql(u8, m.property, "declarations")) fallback_f_idx = 0
+                        else if (std.mem.eql(u8, m.property, "auto_drops")) fallback_f_idx = 1
+                        else if (std.mem.eql(u8, m.property, "kind")) fallback_f_idx = 0
+                        else if (std.mem.eql(u8, m.property, "span")) fallback_f_idx = 1
+                        else if (std.mem.eql(u8, m.property, "module_name")) fallback_f_idx = 2
+                        else if (std.mem.eql(u8, m.property, "inferred_type")) fallback_f_idx = 3
+                        else if (std.mem.eql(u8, m.property, "data")) fallback_f_idx = 4;
+                    }
+                }
+                if (fallback_s_name) |sname| {
+                    const ptr_temp = self.nextTemp();
+                    const ptr_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ptr_temp});
+                    try writer.print("  {s} = getelementptr inbounds %{s}, ptr {s}, i32 0, i32 {d}\n", .{ ptr_name, sname, base_ptr, fallback_f_idx });
+                    return ptr_name;
                 }
                 std.debug.print("Unsupported left hand side for assignment: prop={s}, obj_type={any}\n", .{ m.property, obj_type.kind });
                 return error.UnsupportedNode;
@@ -3918,7 +3960,7 @@ pub const LLVMCodegen = struct {
                                 val_to_insert = try self.coerceType(val_to_insert, t_to_insert, field_t);
 
                                 const field_gep = self.nextTemp();
-                                try writer.print("  %t.{d} = getelementptr inbounds %{s}, ptr {s}, i32 0, i32 {d}\n", .{ field_gep, ct.name, ptr_name, idx + 1 });
+                                try writer.print("  %t.{d} = getelementptr inbounds %{s}, ptr {s}, i32 0, i32 {d}\n", .{ field_gep, ct.name, ptr_name, idx });
                                 try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ field_t, val_to_insert, field_gep });
                             }
                         }
@@ -4763,12 +4805,12 @@ pub const LLVMCodegen = struct {
                     var field_idx: ?usize = null;
                     for (ct.fields, 0..) |cf, i| {
                         if (std.mem.eql(u8, cf.name, m.property)) {
-                            field_idx = i + 1; // +1 to skip vtable at index 0
+                            field_idx = i;
                             break;
                         }
                     }
                     if (field_idx) |idx| {
-                        const ft = ct.fields[idx - 1].type_kind;
+                        const ft = ct.fields[idx].type_kind;
                         const ft_llvm = typeToLLVM(self.allocator, ft);
                         const ptr_temp = self.nextTemp();
                         const ptr_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ptr_temp});
@@ -4779,6 +4821,21 @@ pub const LLVMCodegen = struct {
                         try writer.print("  {s} = load {s}, ptr {s}\n", .{ load_name, ft_llvm, ptr_name });
                         return load_name;
                     }
+                }
+
+                const ptr_name = self.genLValue(node) catch "null";
+                if (!std.mem.eql(u8, ptr_name, "null") and !std.mem.startsWith(u8, ptr_name, "error.")) {
+                    const load_temp = self.nextTemp();
+                    const load_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{load_temp});
+                    var load_t: []const u8 = typeToLLVM(self.allocator, node.inferred_type orelse .{ .kind = .Any });
+                    if (std.mem.eql(u8, load_t, "i64") or std.mem.eql(u8, load_t, "ptr") or std.mem.eql(u8, load_t, "null") or std.mem.eql(u8, load_t, "void")) {
+                        if (std.mem.eql(u8, m.property, "op") or std.mem.eql(u8, m.property, "name") or std.mem.eql(u8, m.property, "module_name") or std.mem.eql(u8, m.property, "str_val")) load_t = "{ ptr, i64, i64 }"
+                        else if (std.mem.eql(u8, m.property, "cond") or std.mem.eql(u8, m.property, "then_branch") or std.mem.eql(u8, m.property, "else_branch") or std.mem.eql(u8, m.property, "left") or std.mem.eql(u8, m.property, "right") or std.mem.eql(u8, m.property, "body") or std.mem.eql(u8, m.property, "data")) load_t = "ptr"
+                        else if (std.mem.eql(u8, m.property, "kind")) load_t = "i32"
+                        else load_t = "{ ptr, i64, i64 }";
+                    }
+                    try writer.print("  {s} = load {s}, ptr {s}\n", .{ load_name, load_t, ptr_name });
+                    return load_name;
                 }
 
                 return "null";
