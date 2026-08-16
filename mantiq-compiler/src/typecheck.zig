@@ -674,6 +674,10 @@ pub const TypeChecker = struct {
                 var is_builtin = false;
                 if (c.callee.node_type == .Identifier) {
                     const func_name = c.callee.data.Identifier.name;
+                    const is_user_func = if (c.callee.data.Identifier.resolved_symbol) |sym|
+                        sym.kind == .Function and sym.decl_node != null and sym.decl_node.?.node_type == .FunDecl
+                    else
+                        false;
                     if (std.mem.eql(u8, func_name, "make")) {
                         if (c.generic_args) |gens| {
                             if (gens.len == 1) {
@@ -837,10 +841,10 @@ pub const TypeChecker = struct {
                         }
                         node.inferred_type = .{ .kind = .Result };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "H") or std.mem.eql(u8, func_name, "X") or std.mem.eql(u8, func_name, "Y") or std.mem.eql(u8, func_name, "Z") or std.mem.eql(u8, func_name, "qbit")) {
+                    } else if ((std.mem.eql(u8, func_name, "H") or std.mem.eql(u8, func_name, "X") or std.mem.eql(u8, func_name, "Y") or std.mem.eql(u8, func_name, "Z") or std.mem.eql(u8, func_name, "qbit")) and !is_user_func) {
                         node.inferred_type = .{ .kind = .QBit };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "qreg")) {
+                    } else if (std.mem.eql(u8, func_name, "qreg") and !is_user_func) {
                         node.inferred_type = .{ .kind = .QReg };
                         is_builtin = true;
                     } else if (std.mem.eql(u8, func_name, "resize")) {
@@ -848,51 +852,51 @@ pub const TypeChecker = struct {
                         any_type.* = .{ .kind = .Any };
                         node.inferred_type = .{ .kind = .RawPointer, .payload = any_type };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "write")) {
+                    } else if (std.mem.eql(u8, func_name, "write") and !is_user_func) {
                         node.inferred_type = .{ .kind = .Void };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "read")) {
+                    } else if (std.mem.eql(u8, func_name, "read") and !is_user_func) {
                         node.inferred_type = .{ .kind = .String };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "open")) {
+                    } else if (std.mem.eql(u8, func_name, "open") and !is_user_func) {
                         node.inferred_type = .{ .kind = .I32 };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "close")) {
+                    } else if (std.mem.eql(u8, func_name, "close") and !is_user_func) {
                         node.inferred_type = .{ .kind = .Void };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "exists")) {
+                    } else if (std.mem.eql(u8, func_name, "exists") and !is_user_func) {
                         node.inferred_type = .{ .kind = .Boolean };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "exit")) {
+                    } else if (std.mem.eql(u8, func_name, "exit") and !is_user_func) {
                         node.inferred_type = .{ .kind = .Void };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "args")) {
+                    } else if (std.mem.eql(u8, func_name, "args") and !is_user_func) {
                         const ascii_str_type = try self.allocator.create(types.Type);
                         ascii_str_type.* = .{ .kind = .AsciiStr };
                         node.inferred_type = .{ .kind = .List, .payload = ascii_str_type };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "now")) {
+                    } else if (std.mem.eql(u8, func_name, "now") and !is_user_func) {
                         node.inferred_type = .{ .kind = .I64 };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "sleep")) {
+                    } else if (std.mem.eql(u8, func_name, "sleep") and !is_user_func) {
                         node.inferred_type = .{ .kind = .Void };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "os")) {
+                    } else if (std.mem.eql(u8, func_name, "os") and !is_user_func) {
                         node.inferred_type = .{ .kind = .AsciiStr };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "arch")) {
+                    } else if (std.mem.eql(u8, func_name, "arch") and !is_user_func) {
                         node.inferred_type = .{ .kind = .AsciiStr };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "getenv")) {
+                    } else if (std.mem.eql(u8, func_name, "getenv") and !is_user_func) {
                         node.inferred_type = .{ .kind = .AsciiStr };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "setenv")) {
+                    } else if (std.mem.eql(u8, func_name, "setenv") and !is_user_func) {
                         node.inferred_type = .{ .kind = .Void };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "unsetenv")) {
+                    } else if (std.mem.eql(u8, func_name, "unsetenv") and !is_user_func) {
                         node.inferred_type = .{ .kind = .Void };
                         is_builtin = true;
-                    } else if (std.mem.eql(u8, func_name, "print") or std.mem.eql(u8, func_name, "println") or std.mem.eql(u8, func_name, "measure") or std.mem.eql(u8, func_name, "CNOT")) {
+                    } else if ((std.mem.eql(u8, func_name, "print") or std.mem.eql(u8, func_name, "println") or std.mem.eql(u8, func_name, "measure") or std.mem.eql(u8, func_name, "CNOT")) and !is_user_func) {
                         node.inferred_type = .{ .kind = .Void };
                         is_builtin = true;
                     }

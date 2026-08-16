@@ -31,8 +31,6 @@ module.exports = grammar({
     [$._base_type],
     [$.collection_item],
     [$.if_stmt, $.collection_item],
-    [$.if_stmt, $.expr_stmt],
-    [$.statement, $.primary],
     [$.dict_item],
     [$.ternary, $._ternary],
     [$.param_decl, $._base_type],
@@ -332,7 +330,8 @@ module.exports = grammar({
     _assignment: $ => prec.right(1, choice(
       $.assignment,
       $._lambda_expr,
-      $._ternary
+      $._ternary,
+      $.if_stmt
     )),
 
     assignment: $ => seq(field('left', choice($._lambda_expr, $._ternary)), field('operator', $.assign_op), field('right', $._assignment)),
@@ -508,8 +507,7 @@ module.exports = grammar({
         seq('(', optional($._nl), $.expression, optional($._nl), ')'),
         $.dict_literal,
         seq('super', '(', optional($.arguments), ')'),
-        $.fun_expr,
-        $.if_stmt
+        $.fun_expr
     ),
 
     list_literal: $ => seq('[', optional($._nl), optional(seq($.arguments, optional($._nl))), ']'),

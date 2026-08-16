@@ -47,6 +47,7 @@ void __mantiq_parallel_for(int start, int end, void (*closure)(void*, int), void
 
 #include <math.h>
 #include <string.h>
+#include <limits.h>
 
 #define MAX_QUBITS 16
 #define NUM_STATES (1 << MAX_QUBITS)
@@ -145,7 +146,7 @@ void quantum_measure(int target) {
 
 // Memory Management for Closures and Objects
 void* mantiq_malloc(size_t size) {
-    void* ptr = sys_malloc(size);
+    void* ptr = calloc(1, size ? size : 1);
     if (!ptr) {
         fprintf(stderr, "[Runtime] Fatal: memory allocation of %zu bytes failed\n", size);
         abort();
@@ -537,6 +538,36 @@ void mantiq_fs_close(int fd) {
     _close(fd);
 #else
     close(fd);
+#endif
+}
+
+const char* compiler_lib_dir(void) {
+#ifndef _WIN32
+    static char buf[PATH_MAX];
+    char test[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) {
+        return NULL;
+    }
+    buf[n] = '\0';
+    char* slash = strrchr(buf, '/');
+    if (slash == NULL) {
+        return NULL;
+    }
+    if (slash == buf) {
+        slash[1] = '\0';
+    } else {
+        *slash = '\0';
+    }
+    snprintf(test, sizeof(test), "%s/runtime.c", buf);
+    if (access(test, R_OK) != 0) return NULL;
+    snprintf(test, sizeof(test), "%s/tree_sitter_helper.c", buf);
+    if (access(test, R_OK) != 0) return NULL;
+    snprintf(test, sizeof(test), "%s/libtree-sitter-mantiq.so", buf);
+    if (access(test, R_OK) != 0) return NULL;
+    return buf;
+#else
+    return NULL;
 #endif
 }
 
@@ -936,5 +967,18 @@ void mantiq_sys_unsetenv(const char* name_ptr, long long name_len) {
     mantiq_free(name);
 }
 
-
-
+void format_llvm_float(double val, int is_f32, char* out_buf) {
+    if (val == 0.0) {
+        strcpy(out_buf, "0.000000e+00");
+        return;
+    }
+    uint64_t u = 0;
+    if (is_f32) {
+        float f = (float)val;
+        double d = (double)f;
+        memcpy(&u, &d, sizeof(uint64_t));
+    } else {
+        memcpy(&u, &val, sizeof(uint64_t));
+    }
+    sprintf(out_buf, "0x%016llX", (unsigned long long)u);
+}

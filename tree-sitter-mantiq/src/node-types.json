@@ -140,6 +140,10 @@
             "named": true
           },
           {
+            "type": "if_stmt",
+            "named": true
+          },
+          {
             "type": "index_expression",
             "named": true
           },
@@ -1044,6 +1048,10 @@
           "named": true
         },
         {
+          "type": "if_stmt",
+          "named": true
+        },
+        {
           "type": "index_expression",
           "named": true
         },
@@ -1779,10 +1787,6 @@
         },
         {
           "type": "identifier",
-          "named": true
-        },
-        {
-          "type": "if_stmt",
           "named": true
         },
         {

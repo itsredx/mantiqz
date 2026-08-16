@@ -2278,6 +2278,10 @@
           {
             "type": "SYMBOL",
             "name": "_ternary"
+          },
+          {
+            "type": "SYMBOL",
+            "name": "if_stmt"
           }
         ]
       }
@@ -3241,10 +3245,6 @@
         {
           "type": "SYMBOL",
           "name": "fun_expr"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "if_stmt"
         }
       ]
     },
@@ -5939,14 +5939,6 @@
     [
       "if_stmt",
       "collection_item"
-    ],
-    [
-      "if_stmt",
-      "expr_stmt"
-    ],
-    [
-      "statement",
-      "primary"
     ],
     [
       "dict_item"
