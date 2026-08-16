@@ -298,6 +298,24 @@ pub const LLVMCodegen = struct {
             return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{cast_temp});
         }
 
+        // 6b. Integer to Float (sitofp)
+        if (std.mem.startsWith(u8, source_type, "i") and (std.mem.eql(u8, target_type, "double") or std.mem.eql(u8, target_type, "float"))) {
+            const cast_temp = self.nextTemp();
+            try writer.print("  %t.{d} = sitofp {s} {s} to {s}\n", .{ cast_temp, source_type, val, target_type });
+            return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{cast_temp});
+        }
+
+        // 6c. Float to Float (fpext / fptrunc)
+        if ((std.mem.eql(u8, source_type, "double") or std.mem.eql(u8, source_type, "float")) and (std.mem.eql(u8, target_type, "double") or std.mem.eql(u8, target_type, "float"))) {
+            const cast_temp = self.nextTemp();
+            if (std.mem.eql(u8, source_type, "float") and std.mem.eql(u8, target_type, "double")) {
+                try writer.print("  %t.{d} = fpext float {s} to double\n", .{ cast_temp, val });
+            } else {
+                try writer.print("  %t.{d} = fptrunc double {s} to float\n", .{ cast_temp, val });
+            }
+            return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{cast_temp});
+        }
+
         // 7. Dynamic list { ptr, i64, i64 } to static array [N x T]
         if (std.mem.eql(u8, source_type, "{ ptr, i64, i64 }") and std.mem.startsWith(u8, target_type, "[")) {
             const x_pos = std.mem.indexOf(u8, target_type, " x ") orelse return val;

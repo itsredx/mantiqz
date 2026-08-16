@@ -1729,6 +1729,12 @@ pub const TypeChecker = struct {
                         }
 
                         if (expected_type.kind != .Any and expected_type.kind != .Unknown) {
+                            if (r.values) |vals| {
+                                if (vals.len == 1 and vals[0].node_type == .NumberLiteral and (expected_type.kind == .F64 or expected_type.kind == .F32)) {
+                                    vals[0].inferred_type = expected_type;
+                                    ret_val_type = expected_type;
+                                }
+                            }
                             if (!types.isImplicitlyConvertible(ret_val_type, expected_type)) {
                                 std.debug.print("Type Error: Return type mismatch in function '{s}'. Expected '{s}', got '{s}'\n", .{ f.name, types.formatType(expected_type), types.formatType(ret_val_type) });
                                 return error.TypeMismatch;
