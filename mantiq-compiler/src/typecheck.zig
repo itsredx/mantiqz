@@ -386,6 +386,12 @@ pub const TypeChecker = struct {
             type_kind.function = func_type;
         }
 
+        if (annot.is_ref) {
+            const payload_ptr = try self.allocator.create(types.Type);
+            payload_ptr.* = type_kind;
+            return types.Type{ .kind = .RawPointer, .payload = payload_ptr };
+        }
+
         return type_kind;
     }
 

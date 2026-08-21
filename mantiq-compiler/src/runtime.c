@@ -29,6 +29,7 @@
 #endif
 #include <pthread.h>
 #include <time.h>
+#include <sys/resource.h>
 
 #define sys_malloc malloc
 #define sys_free free
@@ -144,6 +145,15 @@ void quantum_measure(int target) {
     }
 }
 
+// Allocation tracking counters
+static long long _alloc_count = 0;
+static long long _alloc_bytes = 0;
+static long long _free_count = 0;
+
+long long mantiq_alloc_count(void) { return _alloc_count; }
+long long mantiq_alloc_bytes(void) { return _alloc_bytes; }
+long long mantiq_free_count(void) { return _free_count; }
+
 // Memory Management for Closures and Objects
 void* mantiq_malloc(size_t size) {
     void* ptr = calloc(1, size ? size : 1);
@@ -151,10 +161,13 @@ void* mantiq_malloc(size_t size) {
         fprintf(stderr, "[Runtime] Fatal: memory allocation of %zu bytes failed\n", size);
         abort();
     }
+    _alloc_count++;
+    _alloc_bytes += (long long)(size ? size : 1);
     return ptr;
 }
 
 void mantiq_free(void* ptr) {
+    _free_count++;
     sys_free(ptr);
 }
 
@@ -874,6 +887,22 @@ void mantiq_panic_at(const char* message, const char* file, int line, int col) {
 
 long long mantiq_time_now() {
     return (long long)time(NULL);
+}
+
+long long mantiq_perf_now_ns() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000000LL + (long long)ts.tv_nsec;
+}
+
+long long mantiq_perf_rss_bytes() {
+#ifdef __linux__
+    struct rusage ru;
+    getrusage(RUSAGE_SELF, &ru);
+    return (long long)ru.ru_maxrss * 1024LL;
+#else
+    return 0;
+#endif
 }
 
 void mantiq_time_sleep(int seconds) {
