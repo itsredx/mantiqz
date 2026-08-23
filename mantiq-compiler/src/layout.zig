@@ -46,7 +46,7 @@ pub fn getAlign(t: types.Type, target: Target) usize {
         .I16, .U16, .F16, .BFloat16 => return 2,
         .I32, .U32, .F32 => return 4,
         .I64, .U64, .F64, .ISize, .USize => return 8,
-        .I128, .U128, .F128 => return 16,
+        .I128, .U128, .F128, .I256, .U256, .I512, .U512, .I1024, .U1024 => return 16,
         .Enum => return 8, // Enums currently fallback to 8 alignment
         .Slice, .Closure, .Interface => return target.pointer_size,
         .String, .Utf8Str, .AsciiStr, .WebStr, .RangeStr, .CStr => return target.pointer_size,
@@ -119,6 +119,9 @@ pub fn getSize(t: types.Type, target: Target) usize {
         .I32, .U32, .F32 => return 4,
         .I64, .U64, .F64, .ISize, .USize => return 8,
         .I128, .U128, .F128 => return 16,
+        .I256, .U256 => return 32,
+        .I512, .U512 => return 64,
+        .I1024, .U1024 => return 128,
         .Enum => return 40,
         .Slice, .Interface => return target.pointer_size,
         .String => return target.pointer_size * 3,

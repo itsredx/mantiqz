@@ -26,9 +26,9 @@ pub const TypeKind = enum {
     Void,
     
     // Signed Integers
-    I8, I16, I32, I64, I128, ISize,
+    I8, I16, I32, I64, I128, I256, I512, I1024, ISize,
     // Unsigned Integers
-    U8, U16, U32, U64, U128, USize,
+    U8, U16, U32, U64, U128, U256, U512, U1024, USize,
     
     // Floats
     F16, BFloat16, F32, F64, F128,
@@ -142,6 +142,9 @@ pub fn parseTypeString(type_str: []const u8) TypeKind {
     if (std.mem.eql(u8, type_str, "i32")) return .I32;
     if (std.mem.eql(u8, type_str, "i64")) return .I64;
     if (std.mem.eql(u8, type_str, "i128")) return .I128;
+    if (std.mem.eql(u8, type_str, "i256")) return .I256;
+    if (std.mem.eql(u8, type_str, "i512")) return .I512;
+    if (std.mem.eql(u8, type_str, "i1024")) return .I1024;
     if (std.mem.eql(u8, type_str, "isize")) return .ISize;
     
     if (std.mem.eql(u8, type_str, "u8") or std.mem.eql(u8, type_str, "byte")) return .U8;
@@ -149,6 +152,9 @@ pub fn parseTypeString(type_str: []const u8) TypeKind {
     if (std.mem.eql(u8, type_str, "u32")) return .U32;
     if (std.mem.eql(u8, type_str, "u64")) return .U64;
     if (std.mem.eql(u8, type_str, "u128")) return .U128;
+    if (std.mem.eql(u8, type_str, "u256")) return .U256;
+    if (std.mem.eql(u8, type_str, "u512")) return .U512;
+    if (std.mem.eql(u8, type_str, "u1024")) return .U1024;
     if (std.mem.eql(u8, type_str, "usize")) return .USize;
     
     if (std.mem.eql(u8, type_str, "f16")) return .F16;
@@ -330,8 +336,8 @@ pub fn formatType(t: Type) []const u8 {
         .Unknown => "unknown",
         .Any => "Any",
         .Void => "void",
-        .I8 => "i8", .I16 => "i16", .I32 => "i32", .I64 => "i64", .I128 => "i128", .ISize => "isize",
-        .U8 => "u8", .U16 => "u16", .U32 => "u32", .U64 => "u64", .U128 => "u128", .USize => "usize",
+        .I8 => "i8", .I16 => "i16", .I32 => "i32", .I64 => "i64", .I128 => "i128", .I256 => "i256", .I512 => "i512", .I1024 => "i1024", .ISize => "isize",
+        .U8 => "u8", .U16 => "u16", .U32 => "u32", .U64 => "u64", .U128 => "u128", .U256 => "u256", .U512 => "u512", .U1024 => "u1024", .USize => "usize",
         .F16 => "f16", .BFloat16 => "bf16", .F32 => "f32", .F64 => "f64", .F128 => "f128",
         .Char => "char", .Boolean => "bool",
         .CStr => "cstr", .AsciiStr => "asciistr", .Utf8Str => "utf8str",

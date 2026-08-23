@@ -1011,3 +1011,59 @@ void format_llvm_float(double val, int is_f32, char* out_buf) {
     }
     sprintf(out_buf, "0x%016llX", (unsigned long long)u);
 }
+
+// ── BFloat16 ABI Conversion Lowering ───────────────────────────────────────
+#ifdef __x86_64__
+__attribute__((naked)) void __truncsfbf2(void) {
+    __asm__ volatile (
+        "movd %xmm0, %eax\n\t"
+        "movl %eax, %edx\n\t"
+        "andl $0x7f800000, %edx\n\t"
+        "cmpl $0x7f800000, %edx\n\t"
+        "jne 1f\n\t"
+        "movl %eax, %edx\n\t"
+        "andl $0x007fffff, %edx\n\t"
+        "jz 2f\n\t"
+        "shrl $16, %eax\n\t"
+        "orl $0x0040, %eax\n\t"
+        "jmp 3f\n\t"
+        "1:\n\t"
+        "movl %eax, %edx\n\t"
+        "shrl $16, %edx\n\t"
+        "andl $1, %edx\n\t"
+        "addl $0x7fff, %edx\n\t"
+        "addl %edx, %eax\n\t"
+        "2:\n\t"
+        "shrl $16, %eax\n\t"
+        "3:\n\t"
+        "movd %eax, %xmm0\n\t"
+        "ret\n\t"
+    );
+}
+
+__attribute__((naked)) void __extendbfsf2(void) {
+    __asm__ volatile (
+        "movd %xmm0, %eax\n\t"
+        "shll $16, %eax\n\t"
+        "movd %eax, %xmm0\n\t"
+        "ret\n\t"
+    );
+}
+
+__attribute__((naked)) void __truncdfbf2(void) {
+    __asm__ volatile (
+        "cvtsd2ss %xmm0, %xmm0\n\t"
+        "jmp __truncsfbf2\n\t"
+    );
+}
+
+__attribute__((naked)) void __extendbfdf2(void) {
+    __asm__ volatile (
+        "movd %xmm0, %eax\n\t"
+        "shll $16, %eax\n\t"
+        "movd %eax, %xmm0\n\t"
+        "cvtss2sd %xmm0, %xmm0\n\t"
+        "ret\n\t"
+    );
+}
+#endif
