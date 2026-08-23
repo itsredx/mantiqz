@@ -39,6 +39,22 @@ fn unescapeString(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
                 'n' => { try list.append('\n'); i += 2; },
                 'r' => { try list.append('\r'); i += 2; },
                 't' => { try list.append('\t'); i += 2; },
+                'e' => { try list.append('\x1b'); i += 2; },
+                'x' => {
+                    if (i + 3 < raw.len) {
+                        const h1 = raw[i + 2];
+                        const h2 = raw[i + 3];
+                        const v1 = std.fmt.charToDigit(h1, 16) catch null;
+                        const v2 = std.fmt.charToDigit(h2, 16) catch null;
+                        if (v1 != null and v2 != null) {
+                            try list.append((@as(u8, @intCast(v1.?)) << 4) | @as(u8, @intCast(v2.?)));
+                            i += 4;
+                            continue;
+                        }
+                    }
+                    try list.append('\\');
+                    i += 1;
+                },
                 '\\' => { try list.append('\\'); i += 2; },
                 '"' => { try list.append('"'); i += 2; },
                 '\'' => { try list.append('\''); i += 2; },
