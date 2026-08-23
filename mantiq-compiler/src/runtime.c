@@ -1067,3 +1067,25 @@ __attribute__((naked)) void __extendbfdf2(void) {
     );
 }
 #endif
+
+// ── RTTI / Dynamic Type Checking ─────────────────────────────────────
+typedef struct MantiqTypeDescriptor {
+    int32_t type_id;
+    const char* type_name;
+    int32_t parent_type_id;
+    int32_t num_interfaces;
+    const int32_t* interface_ids;
+} MantiqTypeDescriptor;
+
+int32_t mantiq_isa(const void* rtti_ptr, int32_t target_type_id) {
+    if (!rtti_ptr) return 0;
+    const MantiqTypeDescriptor* desc = (const MantiqTypeDescriptor*)rtti_ptr;
+    if (desc->type_id == target_type_id) return 1;
+    if (desc->parent_type_id == target_type_id && target_type_id != 0) return 1;
+    for (int32_t i = 0; i < desc->num_interfaces; i++) {
+        if (desc->interface_ids && desc->interface_ids[i] == target_type_id) {
+            return 1;
+        }
+    }
+    return 0;
+}
