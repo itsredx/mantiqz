@@ -34,7 +34,7 @@ pub const TypeKind = enum {
     F16, BFloat16, F32, F64, F128,
     
     // Characters & Booleans
-    Char, Boolean,
+    Char, Boolean, Color,
     
     // Strings
     CStr, AsciiStr, Utf8Str, WebStr, RangeStr, String,
@@ -165,6 +165,7 @@ pub fn parseTypeString(type_str: []const u8) TypeKind {
     
     if (std.mem.eql(u8, type_str, "char")) return .Char;
     if (std.mem.eql(u8, type_str, "bool")) return .Boolean;
+    if (std.mem.eql(u8, type_str, "color") or std.mem.eql(u8, type_str, "Color")) return .Color;
     
     if (std.mem.eql(u8, type_str, "cstr")) return .CStr;
     if (std.mem.eql(u8, type_str, "asciistr") or std.mem.eql(u8, type_str, "astr") or std.mem.eql(u8, type_str, "AsciiStr")) return .AsciiStr;
@@ -230,11 +231,11 @@ pub fn isImplicitlyConvertible(from: Type, to: Type) bool {
 
     // Allow implicit conversion between numeric types for literal assignments
     const from_is_num = switch (from.kind) {
-        .I8, .I16, .I32, .I64, .I128, .ISize, .U8, .U16, .U32, .U64, .U128, .USize, .F16, .BFloat16, .F32, .F64, .F128 => true,
+        .I8, .I16, .I32, .I64, .I128, .ISize, .U8, .U16, .U32, .U64, .U128, .USize, .F16, .BFloat16, .F32, .F64, .F128, .Color => true,
         else => false,
     };
     const to_is_num = switch (to.kind) {
-        .I8, .I16, .I32, .I64, .I128, .ISize, .U8, .U16, .U32, .U64, .U128, .USize, .F16, .BFloat16, .F32, .F64, .F128 => true,
+        .I8, .I16, .I32, .I64, .I128, .ISize, .U8, .U16, .U32, .U64, .U128, .USize, .F16, .BFloat16, .F32, .F64, .F128, .Color => true,
         else => false,
     };
     if (from_is_num and to_is_num) return true;
@@ -249,7 +250,7 @@ pub fn isCopyType(t: Type) bool {
         .I8, .I16, .I32, .I64, .I128, .ISize,
         .U8, .U16, .U32, .U64, .U128, .USize,
         .F16, .BFloat16, .F32, .F64, .F128,
-        .Char, .Boolean, .QBit, .QReg, .RawPointer, .Function, .Closure,
+        .Char, .Boolean, .Color, .QBit, .QReg, .RawPointer, .Function, .Closure,
         .CStr, .AsciiStr, .Utf8Str, .WebStr, .RangeStr => return true,
         
         .Enum => {
@@ -339,7 +340,7 @@ pub fn formatType(t: Type) []const u8 {
         .I8 => "i8", .I16 => "i16", .I32 => "i32", .I64 => "i64", .I128 => "i128", .I256 => "i256", .I512 => "i512", .I1024 => "i1024", .ISize => "isize",
         .U8 => "u8", .U16 => "u16", .U32 => "u32", .U64 => "u64", .U128 => "u128", .U256 => "u256", .U512 => "u512", .U1024 => "u1024", .USize => "usize",
         .F16 => "f16", .BFloat16 => "bf16", .F32 => "f32", .F64 => "f64", .F128 => "f128",
-        .Char => "char", .Boolean => "bool",
+        .Char => "char", .Boolean => "bool", .Color => "color",
         .CStr => "cstr", .AsciiStr => "asciistr", .Utf8Str => "utf8str",
         .WebStr => "webstr", .RangeStr => "rangestr", .String => "String",
         .Slice => "slice", .List => "List", .Tuple => "Tuple", .Dict => "Dict",

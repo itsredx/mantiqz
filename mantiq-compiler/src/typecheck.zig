@@ -491,6 +491,9 @@ pub const TypeChecker = struct {
             .BooleanLiteral => {
                 node.inferred_type = .{ .kind = .Boolean };
             },
+            .ColorLiteral => {
+                node.inferred_type = .{ .kind = .Color };
+            },
             .KeywordArg => |*k| {
                 try self.checkNode(k.value);
                 node.inferred_type = k.value.inferred_type;
@@ -3320,6 +3323,10 @@ pub fn cloneNode(allocator: std.mem.Allocator, node: *ast.Node, bindings: std.St
         .BooleanLiteral => {
             const d = node.data.BooleanLiteral;
             cloned.data = .{ .BooleanLiteral = d };
+        },
+        .ColorLiteral => {
+            const d = node.data.ColorLiteral;
+            cloned.data = .{ .ColorLiteral = d };
         },
         .ListLiteral => {
             var d = node.data.ListLiteral;

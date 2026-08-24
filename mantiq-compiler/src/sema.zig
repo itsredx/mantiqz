@@ -879,7 +879,7 @@ pub const SemanticAnalyzer = struct {
             .ThrowStmt => |*th| {
                 try self.resolvePass2(th.value);
             },
-            .Program, .NumberLiteral, .StringLiteral, .BooleanLiteral, .MacroDecl, .MacroInvocation => {}, // Nothing to resolve
+            .Program, .NumberLiteral, .StringLiteral, .BooleanLiteral, .ColorLiteral, .MacroDecl, .MacroInvocation => {}, // Nothing to resolve
         }
     }
 };

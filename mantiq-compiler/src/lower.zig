@@ -234,6 +234,44 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
             return self.createNode(.BooleanLiteral, getSpan(ts_node), .{
                 .BooleanLiteral = .{ .value = val },
             });
+        } else if (std.mem.eql(u8, node_type, "color_literal")) {
+            const raw_text = self.extractText(ts_node);
+            var offset: usize = 0;
+            if (raw_text.len > 0 and raw_text[0] == '#') {
+                offset = 1;
+            }
+            const hex = raw_text[offset..];
+            var r: u32 = 0;
+            var g: u32 = 0;
+            var b: u32 = 0;
+            var a: u32 = 255;
+            if (hex.len == 3) {
+                const r_n = std.fmt.parseInt(u32, hex[0..1], 16) catch 0;
+                const g_n = std.fmt.parseInt(u32, hex[1..2], 16) catch 0;
+                const b_n = std.fmt.parseInt(u32, hex[2..3], 16) catch 0;
+                r = (r_n << 4) | r_n;
+                g = (g_n << 4) | g_n;
+                b = (b_n << 4) | b_n;
+            } else if (hex.len == 6) {
+                r = std.fmt.parseInt(u32, hex[0..2], 16) catch 0;
+                g = std.fmt.parseInt(u32, hex[2..4], 16) catch 0;
+                b = std.fmt.parseInt(u32, hex[4..6], 16) catch 0;
+            } else if (hex.len == 8) {
+                r = std.fmt.parseInt(u32, hex[0..2], 16) catch 0;
+                g = std.fmt.parseInt(u32, hex[2..4], 16) catch 0;
+                b = std.fmt.parseInt(u32, hex[4..6], 16) catch 0;
+                a = std.fmt.parseInt(u32, hex[6..8], 16) catch 0;
+            }
+            const argb: u32 = (a << 24) | (r << 16) | (g << 8) | b;
+            return self.createNode(.ColorLiteral, getSpan(ts_node), .{
+                .ColorLiteral = .{
+                    .value = argb,
+                    .r = @intCast(r),
+                    .g = @intCast(g),
+                    .b = @intCast(b),
+                    .a = @intCast(a),
+                },
+            });
         } else if (std.mem.eql(u8, node_type, "string")) {
             return self.createNode(.StringLiteral, getSpan(ts_node), .{
                 .StringLiteral = .{ .value = self.extractText(ts_node) },
@@ -3139,6 +3177,9 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
             .BooleanLiteral => |b| {
                 cloned.data = .{ .BooleanLiteral = .{ .value = b.value } };
             },
+            .ColorLiteral => |c_val| {
+                cloned.data = .{ .ColorLiteral = .{ .value = c_val.value, .r = c_val.r, .g = c_val.g, .b = c_val.b, .a = c_val.a } };
+            },
             .KeywordArg => |k| {
                 cloned.data = .{ .KeywordArg = .{
                     .name = k.name,
@@ -3303,6 +3344,7 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
                 for (n.parts) |child| try self.collectMacroLocals(child, locals);
             },
             .BooleanLiteral => {},
+            .ColorLiteral => {},
             .KeywordArg => |n| {
                 try self.collectMacroLocals(n.value, locals);
             },

@@ -88,7 +88,7 @@ module.exports = grammar({
         $.block_body
     ),
 
-    access_modifier: $ => choice('public', 'private'),
+    access_modifier: $ => choice('public', 'private', 'protected'),
 
     interface_decl: $ => seq(
         'interface',

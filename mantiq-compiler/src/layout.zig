@@ -44,7 +44,7 @@ pub fn getAlign(t: types.Type, target: Target) usize {
         .Void => return 1,
         .I8, .U8, .Char, .Boolean => return 1,
         .I16, .U16, .F16, .BFloat16 => return 2,
-        .I32, .U32, .F32 => return 4,
+        .I32, .U32, .F32, .Color => return 4,
         .I64, .U64, .F64, .ISize, .USize => return 8,
         .I128, .U128, .F128, .I256, .U256, .I512, .U512, .I1024, .U1024 => return 16,
         .Enum => return 8, // Enums currently fallback to 8 alignment
@@ -116,7 +116,7 @@ pub fn getSize(t: types.Type, target: Target) usize {
         .Void => return 0,
         .I8, .U8, .Char, .Boolean => return 1,
         .I16, .U16, .F16, .BFloat16 => return 2,
-        .I32, .U32, .F32 => return 4,
+        .I32, .U32, .F32, .Color => return 4,
         .I64, .U64, .F64, .ISize, .USize => return 8,
         .I128, .U128, .F128 => return 16,
         .I256, .U256 => return 32,

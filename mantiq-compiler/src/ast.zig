@@ -98,6 +98,7 @@ pub const NodeType = enum {
     StringLiteral,
     InterpolatedString,
     BooleanLiteral,
+    ColorLiteral,
     KeywordArg,
     ListLiteral,
     DictLiteral,
@@ -299,6 +300,13 @@ pub const NodeData = union(NodeType) {
     },
     BooleanLiteral: struct {
         value: bool,
+    },
+    ColorLiteral: struct {
+        value: u32,
+        r: u8,
+        g: u8,
+        b: u8,
+        a: u8,
     },
     KeywordArg: struct {
         name: []const u8,

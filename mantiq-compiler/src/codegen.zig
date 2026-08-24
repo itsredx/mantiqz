@@ -925,7 +925,7 @@ pub const LLVMCodegen = struct {
             .Void => "void",
             .I8, .U8, .Char, .Boolean => "i8",
             .I16, .U16 => "i16",
-            .I32, .U32 => "i32",
+            .I32, .U32, .Color => "i32",
             .I64, .U64, .ISize, .USize => "i64", // Assume 64-bit pointer/size
             .I128, .U128 => "i128",
             .F16 => "half",
@@ -2988,6 +2988,9 @@ pub const LLVMCodegen = struct {
             .BooleanLiteral => |*b| {
                 if (b.value) return "1";
                 return "0";
+            },
+            .ColorLiteral => |*c_lit| {
+                return try std.fmt.allocPrint(self.allocator, "{d}", .{c_lit.value});
             },
             .KeywordArg => {
                 unreachable; // KeywordArgs are flattened during typechecking
