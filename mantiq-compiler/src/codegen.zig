@@ -462,8 +462,19 @@ pub const LLVMCodegen = struct {
         try preamble.writer().print("declare void @__mantiq_dict_clear(ptr)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_concat_str(ptr, i64, ptr, i64)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_i32_to_str(i32, ptr)\n", .{});
+        try preamble.writer().print("declare ptr @mantiq_i64_to_str(i64, ptr)\n", .{});
+        try preamble.writer().print("declare ptr @mantiq_u64_to_str(i64, ptr)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_float_to_str(float, ptr)\n", .{});
+        try preamble.writer().print("declare ptr @mantiq_f64_to_str(double, ptr)\n", .{});
+        try preamble.writer().print("declare ptr @mantiq_char_to_str(i8, ptr)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_bool_to_str(i32, ptr)\n", .{});
+        try preamble.writer().print("declare i32 @mantiq_quantum_qbit(i32)\n", .{});
+        try preamble.writer().print("declare i32 @mantiq_quantum_h(i32)\n", .{});
+        try preamble.writer().print("declare i32 @mantiq_quantum_measure(i32)\n", .{});
+        try preamble.writer().print("declare void @mantiq_quantum_cnot(i32, i32)\n", .{});
+        try preamble.writer().print("declare i32 @mantiq_quantum_x(i32)\n", .{});
+        try preamble.writer().print("declare i32 @mantiq_quantum_y(i32)\n", .{});
+        try preamble.writer().print("declare i32 @mantiq_quantum_z(i32)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_spawn(ptr, ptr)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_await(ptr)\n", .{});
         try preamble.writer().print("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n\n", .{});
@@ -2926,6 +2937,16 @@ pub const LLVMCodegen = struct {
                         try writer.print("  %t.{d} = alloca i64\n", .{len_alloca});
                         const str_temp = self.nextTemp();
                         try writer.print("  %t.{d} = call ptr @mantiq_float_to_str(float {s}, ptr %t.{d})\n", .{ str_temp, part_val, len_alloca });
+                        new_ptr = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{str_temp});
+                        
+                        const len_load = self.nextTemp();
+                        try writer.print("  %t.{d} = load i64, ptr %t.{d}\n", .{ len_load, len_alloca });
+                        new_len = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{len_load});
+                    } else if (part_type.kind == .F64) {
+                        const len_alloca = self.nextTemp();
+                        try writer.print("  %t.{d} = alloca i64\n", .{len_alloca});
+                        const str_temp = self.nextTemp();
+                        try writer.print("  %t.{d} = call ptr @mantiq_f64_to_str(double {s}, ptr %t.{d})\n", .{ str_temp, part_val, len_alloca });
                         new_ptr = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{str_temp});
                         
                         const len_load = self.nextTemp();

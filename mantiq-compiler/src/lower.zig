@@ -283,8 +283,23 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
                 const child = c.ts_node_child(ts_node, child_idx);
                 const c_type_str = tsType(child);
                 if (std.mem.eql(u8, c_type_str, "string_content")) {
+                    const raw_text = self.extractText(child);
+                    var unescaped = std.ArrayList(u8).init(self.allocator);
+                    var ti: usize = 0;
+                    while (ti < raw_text.len) {
+                        if (raw_text[ti] == '{' and ti + 1 < raw_text.len and raw_text[ti + 1] == '{') {
+                            try unescaped.append('{');
+                            ti += 2;
+                        } else if (raw_text[ti] == '}' and ti + 1 < raw_text.len and raw_text[ti + 1] == '}') {
+                            try unescaped.append('}');
+                            ti += 2;
+                        } else {
+                            try unescaped.append(raw_text[ti]);
+                            ti += 1;
+                        }
+                    }
                     const str_node = try self.createNode(.StringLiteral, getSpan(child), .{
-                        .StringLiteral = .{ .value = self.extractText(child) },
+                        .StringLiteral = .{ .value = try unescaped.toOwnedSlice() },
                     });
                     try parts.append(str_node);
                 } else if (std.mem.eql(u8, c_type_str, "interpolation")) {

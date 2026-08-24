@@ -627,6 +627,41 @@ void* mantiq_float_to_str(float val, long long* out_len) {
     return new_ptr;
 }
 
+void* mantiq_i64_to_str(long long val, long long* out_len) {
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%lld", val);
+    char* new_ptr = (char*)mantiq_malloc(len + 1);
+    memcpy(new_ptr, buf, len + 1);
+    if (out_len) *out_len = len;
+    return new_ptr;
+}
+
+void* mantiq_u64_to_str(unsigned long long val, long long* out_len) {
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%llu", val);
+    char* new_ptr = (char*)mantiq_malloc(len + 1);
+    memcpy(new_ptr, buf, len + 1);
+    if (out_len) *out_len = len;
+    return new_ptr;
+}
+
+void* mantiq_f64_to_str(double val, long long* out_len) {
+    char buf[64];
+    int len = snprintf(buf, sizeof(buf), "%f", val);
+    char* new_ptr = (char*)mantiq_malloc(len + 1);
+    memcpy(new_ptr, buf, len + 1);
+    if (out_len) *out_len = len;
+    return new_ptr;
+}
+
+void* mantiq_char_to_str(char val, long long* out_len) {
+    char* new_ptr = (char*)mantiq_malloc(2);
+    new_ptr[0] = val;
+    new_ptr[1] = '\0';
+    if (out_len) *out_len = 1;
+    return new_ptr;
+}
+
 void* mantiq_bool_to_str(int val, long long* out_len) {
     const char* str = val ? "True" : "False";
     long long len = val ? 4 : 5;
@@ -1088,4 +1123,40 @@ int32_t mantiq_isa(const void* rtti_ptr, int32_t target_type_id) {
         }
     }
     return 0;
+}
+
+// ── Quantum Simulator ────────────────────────────────────────────────────────
+static int32_t s_mantiq_qubits[64] = {0};
+
+int32_t mantiq_quantum_qbit(int32_t id) {
+    s_mantiq_qubits[id & 63] = (id != 0) ? 1 : 0;
+    return id & 63;
+}
+
+int32_t mantiq_quantum_h(int32_t q) {
+    return q & 63;
+}
+
+int32_t mantiq_quantum_measure(int32_t q) {
+    return s_mantiq_qubits[q & 63];
+}
+
+void mantiq_quantum_cnot(int32_t control, int32_t target) {
+    if (s_mantiq_qubits[control & 63]) {
+        s_mantiq_qubits[target & 63] ^= 1;
+    }
+}
+
+int32_t mantiq_quantum_x(int32_t q) {
+    s_mantiq_qubits[q & 63] ^= 1;
+    return q & 63;
+}
+
+int32_t mantiq_quantum_y(int32_t q) {
+    s_mantiq_qubits[q & 63] ^= 1;
+    return q & 63;
+}
+
+int32_t mantiq_quantum_z(int32_t q) {
+    return q & 63;
 }
