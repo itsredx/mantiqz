@@ -134,6 +134,11 @@ pub const DeadCodeEliminator = struct {
                     try self.markNode(element);
                 }
             },
+            .ListComprehension => |comp| {
+                try self.markNode(comp.iterable);
+                if (comp.condition) |cond| try self.markNode(cond);
+                try self.markNode(comp.yield_expr);
+            },
             else => {},
         }
     }

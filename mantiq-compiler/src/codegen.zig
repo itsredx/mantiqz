@@ -4554,6 +4554,176 @@ pub const LLVMCodegen = struct {
                 try self.registerTemp(fat_name, ptr_name);
                 return fat_name;
             },
+            .ListComprehension => |*comp| {
+                if (self.is_global) return "zeroinitializer";
+
+                const yield_t = typeToLLVM(self.allocator, comp.yield_expr.inferred_type orelse .{ .kind = .Any });
+                
+                // Determine whether iterable is a range or a collection
+                var is_range = false;
+                var range_start_val: []const u8 = "0";
+                var range_end_val: []const u8 = "0";
+                if (comp.iterable.node_type == .BinaryExpr and (std.mem.eql(u8, comp.iterable.data.BinaryExpr.operator, "..") or std.mem.eql(u8, comp.iterable.data.BinaryExpr.operator, "..<"))) {
+                    is_range = true;
+                    range_start_val = try self.genExpr(comp.iterable.data.BinaryExpr.left);
+                    range_end_val = try self.genExpr(comp.iterable.data.BinaryExpr.right);
+                }
+
+                const iter_t = typeToLLVM(self.allocator, comp.iterable.inferred_type orelse .{ .kind = .Any });
+
+                // Loop IDs
+                const comp_id = self.temp_counter;
+                self.temp_counter += 1;
+                const cond_lbl = try std.fmt.allocPrint(self.allocator, "comp.cond.{d}", .{comp_id});
+                const body_lbl = try std.fmt.allocPrint(self.allocator, "comp.body.{d}", .{comp_id});
+                const yield_lbl = try std.fmt.allocPrint(self.allocator, "comp.yield.{d}", .{comp_id});
+                const inc_lbl = try std.fmt.allocPrint(self.allocator, "comp.inc.{d}", .{comp_id});
+                const end_lbl = try std.fmt.allocPrint(self.allocator, "comp.end.{d}", .{comp_id});
+
+                var src_ptr: []const u8 = "null";
+                var total_count_temp: usize = 0;
+
+                if (is_range) {
+                    const diff_temp = self.nextTemp();
+                    try writer.print("  %t.{d} = sub i64 {s}, {s}\n", .{ diff_temp, range_end_val, range_start_val });
+                    total_count_temp = diff_temp;
+                } else {
+                    const iter_val = try self.genExpr(comp.iterable);
+                    const s_ptr = self.nextTemp();
+                    try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ s_ptr, iter_t, iter_val });
+                    src_ptr = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{s_ptr});
+
+                    const s_len = self.nextTemp();
+                    try writer.print("  %t.{d} = extractvalue {s} {s}, 1\n", .{ s_len, iter_t, iter_val });
+                    total_count_temp = s_len;
+                }
+
+                // Initial allocation
+                const size_ptr = self.nextTemp();
+                const size_int = self.nextTemp();
+                try writer.print("  %t.{d} = getelementptr {s}, ptr null, i32 1\n", .{ size_ptr, yield_t });
+                try writer.print("  %t.{d} = ptrtoint ptr %t.{d} to i64\n", .{ size_int, size_ptr });
+
+                const alloc_cap_temp = self.nextTemp();
+                try writer.print("  %t.{d} = select i1 (icmp sgt i64 %t.{d}, 0), i64 %t.{d}, i64 8\n", .{ alloc_cap_temp, total_count_temp, total_count_temp });
+
+                const byte_size = self.nextTemp();
+                try writer.print("  %t.{d} = mul i64 %t.{d}, %t.{d}\n", .{ byte_size, alloc_cap_temp, size_int });
+
+                const buf_ptr_temp = self.nextTemp();
+                const buf_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{buf_ptr_temp});
+                try writer.print("  {s} = call ptr @mantiq_malloc(i64 %t.{d})\n", .{ buf_name, byte_size });
+
+                // Accumulator state
+                const acc_buf_slot = self.nextTemp();
+                try writer.print("  %t.{d} = alloca ptr\n", .{acc_buf_slot});
+                try writer.print("  store ptr {s}, ptr %t.{d}\n", .{ buf_name, acc_buf_slot });
+
+                const acc_len_slot = self.nextTemp();
+                try writer.print("  %t.{d} = alloca i64\n", .{acc_len_slot});
+                try writer.print("  store i64 0, ptr %t.{d}\n", .{acc_len_slot});
+
+                const idx_slot = self.nextTemp();
+                try writer.print("  %t.{d} = alloca i64\n", .{idx_slot});
+                try writer.print("  store i64 0, ptr %t.{d}\n", .{idx_slot});
+
+                // Element type for iterator
+                var elem_t: []const u8 = "i64";
+                if (is_range) {
+                    if (comp.iterable.data.BinaryExpr.left.inferred_type) |left_t| {
+                        elem_t = typeToLLVM(self.allocator, left_t);
+                    }
+                } else {
+                    const comp_iter_t = comp.iterable.inferred_type orelse types.Type{ .kind = .Any };
+                    if (comp_iter_t.kind == .List and comp_iter_t.payload != null) {
+                        elem_t = typeToLLVM(self.allocator, comp_iter_t.payload.?.*);
+                    }
+                }
+
+                // Iterator variable slot
+                const local_ref = self.getScopedName(comp.iter_name);
+                try writer.print("  %{s} = alloca {s}\n", .{ local_ref, elem_t });
+
+                // Start loop
+                try writer.print("  br label %{s}\n", .{cond_lbl});
+                try writer.print("{s}:\n", .{cond_lbl});
+
+                const curr_idx = self.nextTemp();
+                try writer.print("  %t.{d} = load i64, ptr %t.{d}\n", .{ curr_idx, idx_slot });
+                const cmp = self.nextTemp();
+                try writer.print("  %t.{d} = icmp slt i64 %t.{d}, %t.{d}\n", .{ cmp, curr_idx, total_count_temp });
+                try writer.print("  br i1 %t.{d}, label %{s}, label %{s}\n", .{ cmp, body_lbl, end_lbl });
+
+                // Body
+                try writer.print("{s}:\n", .{body_lbl});
+                if (is_range) {
+                    const r_item = self.nextTemp();
+                    try writer.print("  %t.{d} = add i64 {s}, %t.{d}\n", .{ r_item, range_start_val, curr_idx });
+                    var store_val = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{r_item});
+                    if (std.mem.eql(u8, elem_t, "i32")) {
+                        const tr = self.nextTemp();
+                        try writer.print("  %t.{d} = trunc i64 {s} to i32\n", .{ tr, store_val });
+                        store_val = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{tr});
+                    }
+                    try writer.print("  store {s} {s}, ptr %{s}\n", .{ elem_t, store_val, local_ref });
+                } else {
+                    const elem_ptr = self.nextTemp();
+                    try writer.print("  %t.{d} = getelementptr inbounds {s}, ptr {s}, i64 %t.{d}\n", .{ elem_ptr, elem_t, src_ptr, curr_idx });
+                    const elem_val = self.nextTemp();
+                    try writer.print("  %t.{d} = load {s}, ptr %t.{d}\n", .{ elem_val, elem_t, elem_ptr });
+                    try writer.print("  store {s} %t.{d}, ptr %{s}\n", .{ elem_t, elem_val, local_ref });
+                }
+
+                // Condition check (if present)
+                if (comp.condition) |cond| {
+                    const cond_val = try self.genExpr(cond);
+                    const cond_cmp = self.nextTemp();
+                    try writer.print("  %t.{d} = icmp ne i1 {s}, 0\n", .{ cond_cmp, cond_val });
+                    try writer.print("  br i1 %t.{d}, label %{s}, label %{s}\n", .{ cond_cmp, yield_lbl, inc_lbl });
+                } else {
+                    try writer.print("  br label %{s}\n", .{yield_lbl});
+                }
+
+                // Yield
+                try writer.print("{s}:\n", .{yield_lbl});
+                const yielded_val = try self.genExpr(comp.yield_expr);
+                const cur_len_temp = self.nextTemp();
+                try writer.print("  %t.{d} = load i64, ptr %t.{d}\n", .{ cur_len_temp, acc_len_slot });
+                const cur_buf_temp = self.nextTemp();
+                try writer.print("  %t.{d} = load ptr, ptr %t.{d}\n", .{ cur_buf_temp, acc_buf_slot });
+                const dest_ptr = self.nextTemp();
+                try writer.print("  %t.{d} = getelementptr inbounds {s}, ptr %t.{d}, i64 %t.{d}\n", .{ dest_ptr, yield_t, cur_buf_temp, cur_len_temp });
+                try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ yield_t, yielded_val, dest_ptr });
+                const next_len = self.nextTemp();
+                try writer.print("  %t.{d} = add i64 %t.{d}, 1\n", .{ next_len, cur_len_temp });
+                try writer.print("  store i64 %t.{d}, ptr %t.{d}\n", .{ next_len, acc_len_slot });
+                try writer.print("  br label %{s}\n", .{inc_lbl});
+
+                // Inc
+                try writer.print("{s}:\n", .{inc_lbl});
+                const next_idx = self.nextTemp();
+                try writer.print("  %t.{d} = add i64 %t.{d}, 1\n", .{ next_idx, curr_idx });
+                try writer.print("  store i64 %t.{d}, ptr %t.{d}\n", .{ next_idx, idx_slot });
+                try writer.print("  br label %{s}\n", .{cond_lbl});
+
+                // End
+                try writer.print("{s}:\n", .{end_lbl});
+                const final_len = self.nextTemp();
+                try writer.print("  %t.{d} = load i64, ptr %t.{d}\n", .{ final_len, acc_len_slot });
+                const final_buf = self.nextTemp();
+                try writer.print("  %t.{d} = load ptr, ptr %t.{d}\n", .{ final_buf, acc_buf_slot });
+
+                const fat1 = self.nextTemp();
+                try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} undef, ptr %t.{d}, 0\n", .{ fat1, final_buf });
+                const fat2 = self.nextTemp();
+                try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 %t.{d}, 1\n", .{ fat2, fat1, final_len });
+                const fat3 = self.nextTemp();
+                try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 %t.{d}, 2\n", .{ fat3, fat2, final_len });
+
+                const fat_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat3});
+                try self.registerTemp(fat_name, buf_name);
+                return fat_name;
+            },
             .DictLiteral => |*d| {
                 if (d.keys.len == 0) return "zeroinitializer";
                 if (self.is_global) return "undef";

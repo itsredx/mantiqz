@@ -101,6 +101,7 @@ pub const NodeType = enum {
     ColorLiteral,
     KeywordArg,
     ListLiteral,
+    ListComprehension,
     DictLiteral,
     IndexExpr,
     AwaitExpr,
@@ -314,6 +315,13 @@ pub const NodeData = union(NodeType) {
     },
     ListLiteral: struct {
         elements: []*Node,
+    },
+    ListComprehension: struct {
+        iter_name: []const u8,
+        iter_type_annot: ?TypeAnnotation = null,
+        iterable: *Node,
+        condition: ?*Node = null,
+        yield_expr: *Node,
     },
     DictLiteral: struct {
         keys: []*Node,

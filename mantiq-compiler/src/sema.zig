@@ -826,6 +826,21 @@ pub const SemanticAnalyzer = struct {
                     try self.resolvePass2(element);
                 }
             },
+            .ListComprehension => |*comp| {
+                try self.resolvePass2(comp.iterable);
+                const comp_scope = try symbols.Scope.create(self.allocator, self.current_scope);
+                self.current_scope = comp_scope;
+                
+                const sym = try self.allocator.create(symbols.Symbol);
+                sym.* = .{ .name = comp.iter_name, .kind = .Variable, .decl_node = node };
+                try self.current_scope.define(sym);
+                
+                if (comp.condition) |cond| {
+                    try self.resolvePass2(cond);
+                }
+                try self.resolvePass2(comp.yield_expr);
+                self.current_scope = self.current_scope.parent.?;
+            },
             .SpreadExpr => |*s| {
                 try self.resolvePass2(s.iterable);
             },

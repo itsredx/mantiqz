@@ -351,7 +351,9 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
             return try self.lowerBinaryExpr(ts_node);
         } else if (std.mem.eql(u8, node_type, "ternary")) {
             return try self.lowerTernary(ts_node);
-        } else if (std.mem.eql(u8, node_type, "expression") or std.mem.eql(u8, node_type, "primary") or std.mem.eql(u8, node_type, "expression_statement") or std.mem.eql(u8, node_type, "statement") or std.mem.eql(u8, node_type, "expr_stmt") or std.mem.eql(u8, node_type, "collection_item")) {
+        } else if (std.mem.eql(u8, node_type, "collection_item")) {
+            return (try self.lowerCollectionItem(ts_node)) orelse error.InvalidSyntax;
+        } else if (std.mem.eql(u8, node_type, "expression") or std.mem.eql(u8, node_type, "primary") or std.mem.eql(u8, node_type, "expression_statement") or std.mem.eql(u8, node_type, "statement") or std.mem.eql(u8, node_type, "expr_stmt")) {
             // Unwrap expression containers
             const child_count = c.ts_node_child_count(ts_node);
             for (0..child_count) |i| {
@@ -2374,6 +2376,84 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
         return node;
     }
 
+    fn lowerCollectionItem(self: *Lowerer, ts_node: c.TSNode) LowerError!?*ast.Node {
+        const child_count = c.ts_node_child_count(ts_node);
+        var is_for = false;
+        var iter_name: []const u8 = "";
+        var iter_type_annot: ?ast.TypeAnnotation = null;
+        var iterable_node: ?*ast.Node = null;
+        var yield_expr: ?*ast.Node = null;
+        var condition: ?*ast.Node = null;
+
+        var is_if = false;
+        var if_cond: ?*ast.Node = null;
+        var if_then: ?*ast.Node = null;
+        var if_else: ?*ast.Node = null;
+
+        for (0..child_count) |i| {
+            const child = c.ts_node_child(ts_node, @as(u32, @intCast(i)));
+            const child_type = std.mem.span(c.ts_node_type(child));
+            if (std.mem.eql(u8, child_type, "for")) {
+                is_for = true;
+            } else if (std.mem.eql(u8, child_type, "if")) {
+                is_if = true;
+            } else if (std.mem.eql(u8, child_type, "identifier") and is_for and iter_name.len == 0) {
+                iter_name = self.extractText(child);
+            } else if (std.mem.eql(u8, child_type, "type_annotation") and is_for) {
+                iter_type_annot = try self.lowerTypeAnnotation(child);
+            } else if (std.mem.eql(u8, child_type, "kw_in") or std.mem.eql(u8, child_type, "in")) {
+                // Skip 'in' keyword
+            } else if (is_for and iterable_node == null and c.ts_node_is_named(child)) {
+                iterable_node = try self.lowerNode(child);
+            } else if (is_for and iterable_node != null and c.ts_node_is_named(child)) {
+                const item = try self.lowerNode(child);
+                if (item.node_type == .IfStmt) {
+                    condition = item.data.IfStmt.condition;
+                    yield_expr = item.data.IfStmt.then_branch;
+                } else {
+                    yield_expr = item;
+                }
+            } else if (is_if and if_cond == null and c.ts_node_is_named(child)) {
+                if_cond = try self.lowerNode(child);
+            } else if (is_if and if_cond != null and if_then == null and c.ts_node_is_named(child)) {
+                if_then = try self.lowerNode(child);
+            } else if (is_if and if_then != null and c.ts_node_is_named(child)) {
+                if_else = try self.lowerNode(child);
+            }
+        }
+
+        if (is_for and iterable_node != null and yield_expr != null) {
+            return self.createNode(.ListComprehension, getSpan(ts_node), .{
+                .ListComprehension = .{
+                    .iter_name = iter_name,
+                    .iter_type_annot = iter_type_annot,
+                    .iterable = iterable_node.?,
+                    .condition = condition,
+                    .yield_expr = yield_expr.?,
+                },
+            });
+        }
+
+        if (is_if and if_cond != null and if_then != null) {
+            return self.createNode(.IfStmt, getSpan(ts_node), .{
+                .IfStmt = .{
+                    .condition = if_cond.?,
+                    .then_branch = if_then.?,
+                    .else_branch = if_else,
+                },
+            });
+        }
+
+        // Fallback: unwrap first named child
+        for (0..child_count) |i| {
+            const child = c.ts_node_child(ts_node, @as(u32, @intCast(i)));
+            if (c.ts_node_is_named(child)) {
+                return try self.lowerNode(child);
+            }
+        }
+        return null;
+    }
+
     fn lowerListLiteral(self: *Lowerer, ts_node: c.TSNode) LowerError!*ast.Node {
         var elements = std.ArrayList(*ast.Node).init(self.allocator);
 
@@ -2395,6 +2475,10 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
                 const el = try self.lowerNode(child);
                 try elements.append(el);
             }
+        }
+
+        if (elements.items.len == 1 and elements.items[0].node_type == .ListComprehension) {
+            return elements.items[0];
         }
 
         const node = try self.allocator.create(ast.Node);
@@ -3193,6 +3277,15 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
                 }
                 cloned.data = .{ .ListLiteral = .{ .elements = elements } };
             },
+            .ListComprehension => |comp| {
+                cloned.data = .{ .ListComprehension = .{
+                    .iter_name = comp.iter_name,
+                    .iter_type_annot = comp.iter_type_annot,
+                    .iterable = try self.cloneNode(comp.iterable, hygiene_id, locals),
+                    .condition = if (comp.condition) |c_node| try self.cloneNode(c_node, hygiene_id, locals) else null,
+                    .yield_expr = try self.cloneNode(comp.yield_expr, hygiene_id, locals),
+                } };
+            },
             .AwaitExpr => |aw| {
                 cloned.data = .{ .AwaitExpr = .{ .task_expr = try self.cloneNode(aw.task_expr, hygiene_id, locals) } };
             },
@@ -3350,6 +3443,11 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
             },
             .ListLiteral => |n| {
                 for (n.elements) |child| try self.collectMacroLocals(child, locals);
+            },
+            .ListComprehension => |n| {
+                try self.collectMacroLocals(n.iterable, locals);
+                if (n.condition) |c_node| try self.collectMacroLocals(c_node, locals);
+                try self.collectMacroLocals(n.yield_expr, locals);
             },
             .DictLiteral => |n| {
                 for (n.keys) |child| try self.collectMacroLocals(child, locals);

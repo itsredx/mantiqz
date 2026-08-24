@@ -2793,6 +2793,30 @@ pub const TypeChecker = struct {
                 inner.* = if (l.elements.len > 0) l.elements[0].inferred_type orelse .{ .kind = .Any } else .{ .kind = .Any };
                 node.inferred_type = .{ .kind = .List, .payload = inner };
             },
+            .ListComprehension => |*comp| {
+                try self.checkNode(comp.iterable);
+                const iter_t = comp.iterable.inferred_type orelse types.Type{ .kind = .Any };
+                var elem_type = types.Type{ .kind = .Any };
+                if (iter_t.kind == .List and iter_t.payload != null) {
+                    elem_type = iter_t.payload.?.*;
+                } else if (iter_t.kind == .Slice and iter_t.payload != null) {
+                    elem_type = iter_t.payload.?.*;
+                } else if (iter_t.kind == .I32 or iter_t.kind == .I64 or iter_t.kind == .USize) {
+                    elem_type = iter_t;
+                } else if (comp.iter_type_annot) |annot| {
+                    elem_type = self.validateType(annot) catch types.Type{ .kind = .Any };
+                }
+
+                if (comp.condition) |cond| {
+                    try self.checkNode(cond);
+                }
+                try self.checkNode(comp.yield_expr);
+
+                const yield_t = comp.yield_expr.inferred_type orelse types.Type{ .kind = .Any };
+                const inner = try self.allocator.create(types.Type);
+                inner.* = yield_t;
+                node.inferred_type = .{ .kind = .List, .payload = inner };
+            },
             .DictLiteral => |*d| {
                 for (d.keys) |k| try self.checkNode(k);
                 for (d.values) |v| try self.checkNode(v);
@@ -3334,6 +3358,13 @@ pub fn cloneNode(allocator: std.mem.Allocator, node: *ast.Node, bindings: std.St
             for (d.elements, 0..) |c, i| new_elements[i] = try cloneNode(allocator, c, bindings);
             d.elements = new_elements;
             cloned.data = .{ .ListLiteral = d };
+        },
+        .ListComprehension => {
+            var d = node.data.ListComprehension;
+            d.iterable = try cloneNode(allocator, d.iterable, bindings);
+            if (d.condition) |cond| d.condition = try cloneNode(allocator, cond, bindings);
+            d.yield_expr = try cloneNode(allocator, d.yield_expr, bindings);
+            cloned.data = .{ .ListComprehension = d };
         },
         .DictLiteral => {
             var d = node.data.DictLiteral;
