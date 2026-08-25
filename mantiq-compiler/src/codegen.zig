@@ -459,7 +459,9 @@ pub const LLVMCodegen = struct {
         try preamble.writer().print("declare i8 @__mantiq_dict_remove(ptr, ptr, i32)\n", .{});
         try preamble.writer().print("declare ptr @__mantiq_dict_get_or_insert(ptr, ptr, i32)\n", .{});
         try preamble.writer().print("declare void @__mantiq_list_append(ptr, ptr, i64)\n", .{});
+        try preamble.writer().print("declare void @__mantiq_list_extend(ptr, ptr, i64)\n", .{});
         try preamble.writer().print("declare void @__mantiq_dict_clear(ptr)\n", .{});
+        try preamble.writer().print("declare void @__mantiq_dict_merge(ptr, ptr)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_concat_str(ptr, i64, ptr, i64)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_i32_to_str(i32, ptr)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_i64_to_str(i64, ptr)\n", .{});
@@ -477,6 +479,16 @@ pub const LLVMCodegen = struct {
         try preamble.writer().print("declare i32 @mantiq_quantum_z(i32)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_spawn(ptr, ptr)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_await(ptr)\n", .{});
+        try preamble.writer().print("declare ptr @__mantiq_channel_new(i64, i64)\n", .{});
+        try preamble.writer().print("declare void @__mantiq_channel_send(ptr, ptr, i64)\n", .{});
+        try preamble.writer().print("declare ptr @__mantiq_channel_recv(ptr, i64)\n", .{});
+        try preamble.writer().print("declare i32 @__mantiq_channel_try_send(ptr, ptr, i64)\n", .{});
+        try preamble.writer().print("declare ptr @__mantiq_channel_try_recv(ptr, i64, ptr)\n", .{});
+        try preamble.writer().print("declare void @__mantiq_channel_close(ptr)\n", .{});
+        try preamble.writer().print("declare i32 @__mantiq_channel_is_closed(ptr)\n", .{});
+        try preamble.writer().print("declare i64 @__mantiq_channel_len(ptr)\n", .{});
+        try preamble.writer().print("declare i64 @__mantiq_channel_cap(ptr)\n", .{});
+        try preamble.writer().print("declare void @__mantiq_channel_free(ptr)\n", .{});
         try preamble.writer().print("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n\n", .{});
 
         // Define global panic message strings
@@ -965,7 +977,7 @@ pub const LLVMCodegen = struct {
             .QReg => "{ ptr, i32 }",
             .Function => "{ ptr, ptr }",
             .RawPointer => "ptr",
-            .Slice, .Class, .Interface, .Task => "ptr",
+            .Slice, .Class, .Interface, .Task, .Channel => "ptr",
             .Closure => "{ ptr, ptr }",
             .Tuple => {
                 var buf = std.ArrayList(u8).init(allocator);
@@ -3596,6 +3608,21 @@ pub const LLVMCodegen = struct {
                         try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 0, 1\n", .{ fat2, fat1 });
                         try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 0, 2\n", .{ fat3, fat2 });
                         return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat3});
+                    } else if (std.mem.eql(u8, func_name, "Channel") or std.mem.eql(u8, func_name, "channel")) {
+                        var cap_val: []const u8 = "32";
+                        if (c.arguments.len > 0) {
+                            cap_val = try self.genExpr(c.arguments[0]);
+                        }
+                        var elem_size: usize = 8;
+                        if (node.inferred_type) |inf_t| {
+                            if (inf_t.payload) |pld| {
+                                elem_size = layout.getSize(pld.*, layout.Target.x86_64_linux);
+                            }
+                        }
+                        const chan_ptr = self.nextTemp();
+                        const chan_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{chan_ptr});
+                        try writer.print("  {s} = call ptr @__mantiq_channel_new(i64 {s}, i64 {d})\n", .{ chan_name, cap_val, elem_size });
+                        return chan_name;
                     } else if (std.mem.eql(u8, func_name, "measure") and !is_user_func) {
                         try writer.print("  call void @quantum_measure(i32 {s})\n", .{try self.genExpr(c.arguments[0])});
                         return "null";
@@ -4775,35 +4802,53 @@ pub const LLVMCodegen = struct {
                 try writer.print("  {s} = call ptr @__mantiq_dict_create(i32 {d}, i32 {d}, i32 {d})\n", .{ dict_name, k_size_int, v_size_int, is_str_flag });
                 
                 for (d.keys, 0..) |k, i| {
-                    const v = d.values[i];
-                    const k_val = try self.genExpr(k);
-                    const v_val = try self.genExpr(v);
-                    
-                    const k_alloc = self.nextTemp();
-                    try writer.print("  %t.{d} = alloca {s}\n", .{ k_alloc, k_type });
-                    try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ k_type, k_val, k_alloc });
-                    
-                    const v_alloc = self.nextTemp();
-                    try writer.print("  %t.{d} = alloca {s}\n", .{ v_alloc, v_type });
-                    try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ v_type, v_val, v_alloc });
-                    
-                    const hash_temp = self.nextTemp();
-                    if (isStringLikeType(k_ast_type)) {
-                        const str_ptr = self.nextTemp();
-                        try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ str_ptr, k_type, k_val });
-                        const str_len = self.nextTemp();
-                        try writer.print("  %t.{d} = extractvalue {s} {s}, 1\n", .{ str_len, k_type, k_val });
-                        try writer.print("  %t.{d} = call i32 @__mantiq_hash_string(ptr %t.{d}, i64 %t.{d})\n", .{ hash_temp, str_ptr, str_len });
+                    if (k.node_type == .SpreadExpr) {
+                        const iterable_val = try self.genExpr(k.data.SpreadExpr.iterable);
+                        var src_dict_ptr: []const u8 = iterable_val;
+                        if (std.mem.startsWith(u8, iterable_val, "{") or (k.data.SpreadExpr.iterable.inferred_type != null and k.data.SpreadExpr.iterable.inferred_type.?.kind == .Dict)) {
+                            const src_temp = self.nextTemp();
+                            try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ src_temp, iterable_val });
+                            src_dict_ptr = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{src_temp});
+                        }
+                        try writer.print("  call void @__mantiq_dict_merge(ptr {s}, ptr {s})\n", .{ dict_name, src_dict_ptr });
                     } else {
-                        const byte_len = self.nextTemp();
-                        try writer.print("  %t.{d} = zext i32 %t.{d} to i64\n", .{ byte_len, k_size_int });
-                        try writer.print("  %t.{d} = call i32 @__mantiq_hash_bytes(ptr %t.{d}, i64 %t.{d})\n", .{ hash_temp, k_alloc, byte_len });
+                        const v = d.values[i];
+                        const k_val = try self.genExpr(k);
+                        const v_val = try self.genExpr(v);
+                        
+                        const k_alloc = self.nextTemp();
+                        try writer.print("  %t.{d} = alloca {s}\n", .{ k_alloc, k_type });
+                        try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ k_type, k_val, k_alloc });
+                        
+                        const v_alloc = self.nextTemp();
+                        try writer.print("  %t.{d} = alloca {s}\n", .{ v_alloc, v_type });
+                        try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ v_type, v_val, v_alloc });
+                        
+                        const hash_temp = self.nextTemp();
+                        if (isStringLikeType(k_ast_type)) {
+                            const str_ptr = self.nextTemp();
+                            try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ str_ptr, k_type, k_val });
+                            const str_len = self.nextTemp();
+                            try writer.print("  %t.{d} = extractvalue {s} {s}, 1\n", .{ str_len, k_type, k_val });
+                            try writer.print("  %t.{d} = call i32 @__mantiq_hash_string(ptr %t.{d}, i64 %t.{d})\n", .{ hash_temp, str_ptr, str_len });
+                        } else {
+                            const byte_len = self.nextTemp();
+                            try writer.print("  %t.{d} = zext i32 %t.{d} to i64\n", .{ byte_len, k_size_int });
+                            try writer.print("  %t.{d} = call i32 @__mantiq_hash_bytes(ptr %t.{d}, i64 %t.{d})\n", .{ hash_temp, k_alloc, byte_len });
+                        }
+                        
+                        try writer.print("  call void @__mantiq_dict_set(ptr {s}, ptr %t.{d}, ptr %t.{d}, i32 %t.{d})\n", .{ dict_name, k_alloc, v_alloc, hash_temp });
                     }
-                    
-                    try writer.print("  call void @__mantiq_dict_set(ptr {s}, ptr %t.{d}, ptr %t.{d}, i32 %t.{d})\n", .{ dict_name, k_alloc, v_alloc, hash_temp });
                 }
                 
-                const final_len_str = try std.fmt.allocPrint(self.allocator, "{d}", .{ d.keys.len });
+                const count_ptr_temp = self.nextTemp();
+                try writer.print("  %t.{d} = getelementptr i8, ptr {s}, i64 36\n", .{ count_ptr_temp, dict_name });
+                const count_32_temp = self.nextTemp();
+                try writer.print("  %t.{d} = load i32, ptr %t.{d}\n", .{ count_32_temp, count_ptr_temp });
+                const final_len_temp = self.nextTemp();
+                try writer.print("  %t.{d} = zext i32 %t.{d} to i64\n", .{ final_len_temp, count_32_temp });
+                const final_len_str = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{final_len_temp});
+
                 const fat_temp1 = self.nextTemp();
                 try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} undef, ptr {s}, 0\n", .{ fat_temp1, dict_name });
                 const fat_temp2 = self.nextTemp();
@@ -5536,6 +5581,85 @@ pub const LLVMCodegen = struct {
                         const ret_bool_i8 = self.nextTemp();
                         try writer.print("  %t.{d} = zext i1 %t.{d} to i8\n", .{ ret_bool_i8, removed_bool });
                         return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ret_bool_i8});
+                    }
+                    return "null";
+                } else if (obj_inferred.kind == .Channel) {
+                    const chan_val = try self.genExpr(m.receiver);
+                    var elem_llvm: []const u8 = "i64";
+                    var elem_size: usize = 8;
+                    if (obj_inferred.payload) |pld| {
+                        elem_llvm = typeToLLVM(self.allocator, pld.*);
+                        elem_size = layout.getSize(pld.*, layout.Target.x86_64_linux);
+                    }
+
+                    if (std.mem.eql(u8, m.method_name, "send")) {
+                        if (m.arguments.len > 0) {
+                            var arg_val = try self.genExpr(m.arguments[0]);
+                            const arg_inf = m.arguments[0].inferred_type orelse types.Type{ .kind = .Any };
+                            const arg_source_t = typeToLLVM(self.allocator, arg_inf);
+                            arg_val = try self.coerceType(arg_val, arg_source_t, elem_llvm);
+
+                            const slot_temp = self.nextTemp();
+                            try writer.print("  %t.{d} = alloca {s}\n", .{ slot_temp, elem_llvm });
+                            try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ elem_llvm, arg_val, slot_temp });
+                            try writer.print("  call void @__mantiq_channel_send(ptr {s}, ptr %t.{d}, i64 {d})\n", .{ chan_val, slot_temp, elem_size });
+                        }
+                        return "null";
+                    } else if (std.mem.eql(u8, m.method_name, "recv")) {
+                        const ret_ptr = self.nextTemp();
+                        try writer.print("  %t.{d} = call ptr @__mantiq_channel_recv(ptr {s}, i64 {d})\n", .{ ret_ptr, chan_val, elem_size });
+                        const loaded = self.nextTemp();
+                        try writer.print("  %t.{d} = load {s}, ptr %t.{d}\n", .{ loaded, elem_llvm, ret_ptr });
+                        return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{loaded});
+                    } else if (std.mem.eql(u8, m.method_name, "try_send")) {
+                        if (m.arguments.len > 0) {
+                            var arg_val = try self.genExpr(m.arguments[0]);
+                            const arg_inf = m.arguments[0].inferred_type orelse types.Type{ .kind = .Any };
+                            const arg_source_t = typeToLLVM(self.allocator, arg_inf);
+                            arg_val = try self.coerceType(arg_val, arg_source_t, elem_llvm);
+
+                            const slot_temp = self.nextTemp();
+                            try writer.print("  %t.{d} = alloca {s}\n", .{ slot_temp, elem_llvm });
+                            try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ elem_llvm, arg_val, slot_temp });
+                            const res_i32 = self.nextTemp();
+                            try writer.print("  %t.{d} = call i32 @__mantiq_channel_try_send(ptr {s}, ptr %t.{d}, i64 {d})\n", .{ res_i32, chan_val, slot_temp, elem_size });
+                            const res_i8 = self.nextTemp();
+                            try writer.print("  %t.{d} = trunc i32 %t.{d} to i8\n", .{ res_i8, res_i32 });
+                            return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{res_i8});
+                        }
+                        return "0";
+                    } else if (std.mem.eql(u8, m.method_name, "try_recv")) {
+                        const has_val_alloc = self.nextTemp();
+                        try writer.print("  %t.{d} = alloca i32\n", .{has_val_alloc});
+                        try writer.print("  store i32 0, ptr %t.{d}\n", .{has_val_alloc});
+                        const ret_ptr = self.nextTemp();
+                        try writer.print("  %t.{d} = call ptr @__mantiq_channel_try_recv(ptr {s}, i64 {d}, ptr %t.{d})\n", .{ ret_ptr, chan_val, elem_size, has_val_alloc });
+                        const has_val_i32 = self.nextTemp();
+                        try writer.print("  %t.{d} = load i32, ptr %t.{d}\n", .{ has_val_i32, has_val_alloc });
+                        const has_val_i8 = self.nextTemp();
+                        try writer.print("  %t.{d} = trunc i32 %t.{d} to i8\n", .{ has_val_i8, has_val_i32 });
+                        const opt_struct = self.nextTemp();
+                        try writer.print("  %t.{d} = insertvalue {{ i8, ptr }} undef, i8 %t.{d}, 0\n", .{ opt_struct, has_val_i8 });
+                        const opt_final = self.nextTemp();
+                        try writer.print("  %t.{d} = insertvalue {{ i8, ptr }} %t.{d}, ptr %t.{d}, 1\n", .{ opt_final, opt_struct, ret_ptr });
+                        return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{opt_final});
+                    } else if (std.mem.eql(u8, m.method_name, "close")) {
+                        try writer.print("  call void @__mantiq_channel_close(ptr {s})\n", .{chan_val});
+                        return "null";
+                    } else if (std.mem.eql(u8, m.method_name, "is_closed")) {
+                        const res_i32 = self.nextTemp();
+                        try writer.print("  %t.{d} = call i32 @__mantiq_channel_is_closed(ptr {s})\n", .{ res_i32, chan_val });
+                        const res_i8 = self.nextTemp();
+                        try writer.print("  %t.{d} = trunc i32 %t.{d} to i8\n", .{ res_i8, res_i32 });
+                        return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{res_i8});
+                    } else if (std.mem.eql(u8, m.method_name, "length") or std.mem.eql(u8, m.method_name, "len")) {
+                        const cnt = self.nextTemp();
+                        try writer.print("  %t.{d} = call i64 @__mantiq_channel_len(ptr {s})\n", .{ cnt, chan_val });
+                        return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{cnt});
+                    } else if (std.mem.eql(u8, m.method_name, "capacity") or std.mem.eql(u8, m.method_name, "cap")) {
+                        const cp = self.nextTemp();
+                        try writer.print("  %t.{d} = call i64 @__mantiq_channel_cap(ptr {s})\n", .{ cp, chan_val });
+                        return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{cp});
                     }
                     return "null";
                 } else if (obj_inferred.kind == .Enum and obj_inferred.enum_type != null) {

@@ -428,6 +428,33 @@ void __mantiq_dict_clear(MantiqDict* d) {
     memset(d->occupied, 0, d->capacity);
 }
 
+void __mantiq_dict_merge(MantiqDict* dest, MantiqDict* src) {
+    if (!dest || !src) return;
+    for (int32_t i = 0; i < src->capacity; i++) {
+        if (src->occupied[i]) {
+            void* k = src->keys + i * src->key_size;
+            void* v = src->values + i * src->val_size;
+            uint32_t h = src->hashes[i];
+            __mantiq_dict_set(dest, k, v, h);
+        }
+    }
+}
+
+void __mantiq_list_extend(void* list_addr, void* src_list_addr, int64_t elem_size) {
+    if (!list_addr || !src_list_addr) return;
+    struct MantiqRawList {
+        uint8_t* data;
+        int64_t len;
+        int64_t cap;
+    };
+    struct MantiqRawList* dest = (struct MantiqRawList*)list_addr;
+    struct MantiqRawList* src = (struct MantiqRawList*)src_list_addr;
+    if (!src->data || src->len <= 0) return;
+    for (int64_t i = 0; i < src->len; i++) {
+        __mantiq_list_append(dest, src->data + i * elem_size, elem_size);
+    }
+}
+
 // Print builtins
 void mantiq_print_i32(int val) {
     printf("%d", val);
@@ -751,6 +778,159 @@ void* mantiq_await(MantiqTask* task) {
     return result;
 }
 
+// ── Channels (Windows) ──────────────────────────────────────────────────
+typedef struct MantiqChannel {
+    void** buffer;
+    int64_t capacity;
+    int64_t head;
+    int64_t tail;
+    int64_t count;
+    int is_closed;
+    CRITICAL_SECTION mutex;
+    CONDITION_VARIABLE not_empty;
+    CONDITION_VARIABLE not_full;
+} MantiqChannel;
+
+MantiqChannel* __mantiq_channel_new(int64_t capacity, int64_t elem_size) {
+    (void)elem_size;
+    if (capacity <= 0) capacity = 32;
+    MantiqChannel* chan = (MantiqChannel*)sys_malloc(sizeof(MantiqChannel));
+    chan->buffer = (void**)sys_malloc(sizeof(void*) * capacity);
+    chan->capacity = capacity;
+    chan->head = 0;
+    chan->tail = 0;
+    chan->count = 0;
+    chan->is_closed = 0;
+    InitializeCriticalSection(&chan->mutex);
+    InitializeConditionVariable(&chan->not_empty);
+    InitializeConditionVariable(&chan->not_full);
+    return chan;
+}
+
+void __mantiq_channel_send(MantiqChannel* chan, void* val_ptr, int64_t elem_size) {
+    if (!chan) return;
+    EnterCriticalSection(&chan->mutex);
+    while (chan->count == chan->capacity && !chan->is_closed) {
+        SleepConditionVariableCS(&chan->not_full, &chan->mutex, INFINITE);
+    }
+    if (chan->is_closed) {
+        LeaveCriticalSection(&chan->mutex);
+        return;
+    }
+    int64_t sz = elem_size > 0 ? elem_size : 8;
+    void* slot = sys_malloc(sz);
+    if (val_ptr) memcpy(slot, val_ptr, sz);
+    else memset(slot, 0, sz);
+    chan->buffer[chan->tail] = slot;
+    chan->tail = (chan->tail + 1) % chan->capacity;
+    chan->count++;
+    WakeConditionVariable(&chan->not_empty);
+    LeaveCriticalSection(&chan->mutex);
+}
+
+void* __mantiq_channel_recv(MantiqChannel* chan, int64_t elem_size) {
+    if (!chan) return NULL;
+    EnterCriticalSection(&chan->mutex);
+    while (chan->count == 0 && !chan->is_closed) {
+        SleepConditionVariableCS(&chan->not_empty, &chan->mutex, INFINITE);
+    }
+    if (chan->count == 0 && chan->is_closed) {
+        LeaveCriticalSection(&chan->mutex);
+        int64_t sz = elem_size > 0 ? elem_size : 8;
+        void* empty_slot = sys_malloc(sz);
+        memset(empty_slot, 0, sz);
+        return empty_slot;
+    }
+    void* slot = chan->buffer[chan->head];
+    chan->head = (chan->head + 1) % chan->capacity;
+    chan->count--;
+    WakeConditionVariable(&chan->not_full);
+    LeaveCriticalSection(&chan->mutex);
+    return slot;
+}
+
+int __mantiq_channel_try_send(MantiqChannel* chan, void* val_ptr, int64_t elem_size) {
+    if (!chan) return 0;
+    EnterCriticalSection(&chan->mutex);
+    if (chan->count == chan->capacity || chan->is_closed) {
+        LeaveCriticalSection(&chan->mutex);
+        return 0;
+    }
+    int64_t sz = elem_size > 0 ? elem_size : 8;
+    void* slot = sys_malloc(sz);
+    if (val_ptr) memcpy(slot, val_ptr, sz);
+    else memset(slot, 0, sz);
+    chan->buffer[chan->tail] = slot;
+    chan->tail = (chan->tail + 1) % chan->capacity;
+    chan->count++;
+    WakeConditionVariable(&chan->not_empty);
+    LeaveCriticalSection(&chan->mutex);
+    return 1;
+}
+
+void* __mantiq_channel_try_recv(MantiqChannel* chan, int64_t elem_size, int* has_val) {
+    if (!chan) {
+        if (has_val) *has_val = 0;
+        return NULL;
+    }
+    EnterCriticalSection(&chan->mutex);
+    if (chan->count == 0) {
+        if (has_val) *has_val = 0;
+        LeaveCriticalSection(&chan->mutex);
+        return NULL;
+    }
+    void* slot = chan->buffer[chan->head];
+    chan->head = (chan->head + 1) % chan->capacity;
+    chan->count--;
+    if (has_val) *has_val = 1;
+    WakeConditionVariable(&chan->not_full);
+    LeaveCriticalSection(&chan->mutex);
+    return slot;
+}
+
+void __mantiq_channel_close(MantiqChannel* chan) {
+    if (!chan) return;
+    EnterCriticalSection(&chan->mutex);
+    chan->is_closed = 1;
+    WakeAllConditionVariable(&chan->not_empty);
+    WakeAllConditionVariable(&chan->not_full);
+    LeaveCriticalSection(&chan->mutex);
+}
+
+int __mantiq_channel_is_closed(MantiqChannel* chan) {
+    if (!chan) return 1;
+    EnterCriticalSection(&chan->mutex);
+    int res = chan->is_closed;
+    LeaveCriticalSection(&chan->mutex);
+    return res;
+}
+
+int64_t __mantiq_channel_len(MantiqChannel* chan) {
+    if (!chan) return 0;
+    EnterCriticalSection(&chan->mutex);
+    int64_t cnt = chan->count;
+    LeaveCriticalSection(&chan->mutex);
+    return cnt;
+}
+
+int64_t __mantiq_channel_cap(MantiqChannel* chan) {
+    return chan ? chan->capacity : 0;
+}
+
+void __mantiq_channel_free(MantiqChannel* chan) {
+    if (!chan) return;
+    __mantiq_channel_close(chan);
+    EnterCriticalSection(&chan->mutex);
+    for (int64_t i = 0; i < chan->count; i++) {
+        int64_t idx = (chan->head + i) % chan->capacity;
+        if (chan->buffer[idx]) sys_free(chan->buffer[idx]);
+    }
+    sys_free(chan->buffer);
+    LeaveCriticalSection(&chan->mutex);
+    DeleteCriticalSection(&chan->mutex);
+    sys_free(chan);
+}
+
 #else
 
 typedef struct {
@@ -784,7 +964,6 @@ MantiqTask* mantiq_spawn(void* (*func)(void*), void* env) {
     pthread_mutex_init(&task->mutex, NULL);
     pthread_cond_init(&task->cond, NULL);
     
-    printf("[Async] Spawning new actor task...\n");
     pthread_create(&task->thread, NULL, task_runner, task);
     return task;
 }
@@ -804,10 +983,164 @@ void* mantiq_await(MantiqTask* task) {
     pthread_join(task->thread, NULL);
     pthread_mutex_destroy(&task->mutex);
     pthread_cond_destroy(&task->cond);
-    sys_free(task);
+    mantiq_free(task);
     
-    printf("[Async] Task awaited successfully.\n");
     return result;
+}
+
+// ── Channels (POSIX) ───────────────────────────────────────────────────
+typedef struct MantiqChannel {
+    void** buffer;
+    int64_t capacity;
+    int64_t head;
+    int64_t tail;
+    int64_t count;
+    int is_closed;
+    pthread_mutex_t mutex;
+    pthread_cond_t not_empty;
+    pthread_cond_t not_full;
+} MantiqChannel;
+
+MantiqChannel* __mantiq_channel_new(int64_t capacity, int64_t elem_size) {
+    (void)elem_size;
+    if (capacity <= 0) capacity = 32;
+    MantiqChannel* chan = (MantiqChannel*)mantiq_malloc(sizeof(MantiqChannel));
+    chan->buffer = (void**)mantiq_malloc(sizeof(void*) * capacity);
+    chan->capacity = capacity;
+    chan->head = 0;
+    chan->tail = 0;
+    chan->count = 0;
+    chan->is_closed = 0;
+    pthread_mutex_init(&chan->mutex, NULL);
+    pthread_cond_init(&chan->not_empty, NULL);
+    pthread_cond_init(&chan->not_full, NULL);
+    return chan;
+}
+
+void __mantiq_channel_send(MantiqChannel* chan, void* val_ptr, int64_t elem_size) {
+    if (!chan) return;
+    pthread_mutex_lock(&chan->mutex);
+    while (chan->count == chan->capacity && !chan->is_closed) {
+        pthread_cond_wait(&chan->not_full, &chan->mutex);
+    }
+    if (chan->is_closed) {
+        pthread_mutex_unlock(&chan->mutex);
+        return;
+    }
+    int64_t sz = elem_size > 0 ? elem_size : 8;
+    void* slot = mantiq_malloc(sz);
+    if (val_ptr) memcpy(slot, val_ptr, sz);
+    else memset(slot, 0, sz);
+    chan->buffer[chan->tail] = slot;
+    chan->tail = (chan->tail + 1) % chan->capacity;
+    chan->count++;
+    pthread_cond_signal(&chan->not_empty);
+    pthread_mutex_unlock(&chan->mutex);
+}
+
+void* __mantiq_channel_recv(MantiqChannel* chan, int64_t elem_size) {
+    if (!chan) return NULL;
+    pthread_mutex_lock(&chan->mutex);
+    while (chan->count == 0 && !chan->is_closed) {
+        pthread_cond_wait(&chan->not_empty, &chan->mutex);
+    }
+    if (chan->count == 0 && chan->is_closed) {
+        pthread_mutex_unlock(&chan->mutex);
+        int64_t sz = elem_size > 0 ? elem_size : 8;
+        void* empty_slot = mantiq_malloc(sz);
+        memset(empty_slot, 0, sz);
+        return empty_slot;
+    }
+    void* slot = chan->buffer[chan->head];
+    chan->head = (chan->head + 1) % chan->capacity;
+    chan->count--;
+    pthread_cond_signal(&chan->not_full);
+    pthread_mutex_unlock(&chan->mutex);
+    return slot;
+}
+
+int __mantiq_channel_try_send(MantiqChannel* chan, void* val_ptr, int64_t elem_size) {
+    if (!chan) return 0;
+    pthread_mutex_lock(&chan->mutex);
+    if (chan->count == chan->capacity || chan->is_closed) {
+        pthread_mutex_unlock(&chan->mutex);
+        return 0;
+    }
+    int64_t sz = elem_size > 0 ? elem_size : 8;
+    void* slot = mantiq_malloc(sz);
+    if (val_ptr) memcpy(slot, val_ptr, sz);
+    else memset(slot, 0, sz);
+    chan->buffer[chan->tail] = slot;
+    chan->tail = (chan->tail + 1) % chan->capacity;
+    chan->count++;
+    pthread_cond_signal(&chan->not_empty);
+    pthread_mutex_unlock(&chan->mutex);
+    return 1;
+}
+
+void* __mantiq_channel_try_recv(MantiqChannel* chan, int64_t elem_size, int* has_val) {
+    if (!chan) {
+        if (has_val) *has_val = 0;
+        return NULL;
+    }
+    pthread_mutex_lock(&chan->mutex);
+    if (chan->count == 0) {
+        if (has_val) *has_val = 0;
+        pthread_mutex_unlock(&chan->mutex);
+        return NULL;
+    }
+    void* slot = chan->buffer[chan->head];
+    chan->head = (chan->head + 1) % chan->capacity;
+    chan->count--;
+    if (has_val) *has_val = 1;
+    pthread_cond_signal(&chan->not_full);
+    pthread_mutex_unlock(&chan->mutex);
+    return slot;
+}
+
+void __mantiq_channel_close(MantiqChannel* chan) {
+    if (!chan) return;
+    pthread_mutex_lock(&chan->mutex);
+    chan->is_closed = 1;
+    pthread_cond_broadcast(&chan->not_empty);
+    pthread_cond_broadcast(&chan->not_full);
+    pthread_mutex_unlock(&chan->mutex);
+}
+
+int __mantiq_channel_is_closed(MantiqChannel* chan) {
+    if (!chan) return 1;
+    pthread_mutex_lock(&chan->mutex);
+    int res = chan->is_closed;
+    pthread_mutex_unlock(&chan->mutex);
+    return res;
+}
+
+int64_t __mantiq_channel_len(MantiqChannel* chan) {
+    if (!chan) return 0;
+    pthread_mutex_lock(&chan->mutex);
+    int64_t cnt = chan->count;
+    pthread_mutex_unlock(&chan->mutex);
+    return cnt;
+}
+
+int64_t __mantiq_channel_cap(MantiqChannel* chan) {
+    return chan ? chan->capacity : 0;
+}
+
+void __mantiq_channel_free(MantiqChannel* chan) {
+    if (!chan) return;
+    __mantiq_channel_close(chan);
+    pthread_mutex_lock(&chan->mutex);
+    for (int64_t i = 0; i < chan->count; i++) {
+        int64_t idx = (chan->head + i) % chan->capacity;
+        if (chan->buffer[idx]) mantiq_free(chan->buffer[idx]);
+    }
+    mantiq_free(chan->buffer);
+    pthread_mutex_unlock(&chan->mutex);
+    pthread_mutex_destroy(&chan->mutex);
+    pthread_cond_destroy(&chan->not_empty);
+    pthread_cond_destroy(&chan->not_full);
+    mantiq_free(chan);
 }
 
 #endif

@@ -107,7 +107,7 @@ pub fn getAlign(t: types.Type, target: Target) usize {
         .QReg => return target.pointer_size,
         .Class => return target.pointer_size,
         .Function => return target.pointer_size,
-        .Unknown, .Task, .Error, .Module => return target.pointer_size,
+        .Unknown, .Task, .Channel, .Error, .Module => return target.pointer_size,
     }
 }
 
@@ -213,6 +213,6 @@ pub fn getSize(t: types.Type, target: Target) usize {
         .QReg => return target.pointer_size * 2,
         .Class => return target.pointer_size,
         .Function, .Closure => return target.pointer_size * 2,
-        .Unknown, .Task, .Error, .Module => return target.pointer_size,
+        .Unknown, .Task, .Channel, .Error, .Module => return target.pointer_size,
     }
 }

@@ -36,7 +36,7 @@ pub fn getArgABI(t: types.Type, target: layout.Target) ABISignature {
     
     // Primitives and native types are always passed Directly.
     switch (t.kind) {
-        .Void, .I8, .U8, .Char, .Boolean, .I16, .U16, .F16, .BFloat16, .I32, .U32, .F32, .I64, .U64, .F64, .ISize, .USize, .I128, .U128, .F128, .Enum, .RawPointer, .CStr, .QBit, .Class, .Interface, .Slice, .Task => {
+        .Void, .I8, .U8, .Char, .Boolean, .I16, .U16, .F16, .BFloat16, .I32, .U32, .F32, .I64, .U64, .F64, .ISize, .USize, .I128, .U128, .F128, .Enum, .RawPointer, .CStr, .QBit, .Class, .Interface, .Slice, .Task, .Channel => {
             return .{ .mode = .Direct, .llvm_type = "", .is_struct = false };
         },
         else => {} // Composite types drop down for size analysis.
@@ -66,7 +66,7 @@ pub fn getRetABI(t: types.Type, target: layout.Target) ABISignature {
     const size = layout.getSize(t, target);
     
     switch (t.kind) {
-        .Void, .I8, .U8, .Char, .Boolean, .I16, .U16, .F16, .BFloat16, .I32, .U32, .F32, .I64, .U64, .F64, .ISize, .USize, .I128, .U128, .F128, .Enum, .RawPointer, .CStr, .QBit, .Class, .Interface, .Slice, .Task => {
+        .Void, .I8, .U8, .Char, .Boolean, .I16, .U16, .F16, .BFloat16, .I32, .U32, .F32, .I64, .U64, .F64, .ISize, .USize, .I128, .U128, .F128, .Enum, .RawPointer, .CStr, .QBit, .Class, .Interface, .Slice, .Task, .Channel => {
             return .{ .mode = .Direct, .llvm_type = "", .is_struct = false };
         },
         else => {}

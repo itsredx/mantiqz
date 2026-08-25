@@ -805,6 +805,22 @@ pub const TypeChecker = struct {
                             node.inferred_type = .{ .kind = .Result };
                         }
                         is_builtin = true;
+                    } else if (std.mem.eql(u8, func_name, "Channel") or std.mem.eql(u8, func_name, "channel")) {
+                        if (c.generic_args) |gens| {
+                            if (gens.len >= 1) {
+                                const base_type = try self.allocator.create(types.Type);
+                                base_type.* = try self.validateType(gens[0]);
+                                node.inferred_type = .{
+                                    .kind = .Channel,
+                                    .payload = base_type,
+                                };
+                            } else {
+                                node.inferred_type = .{ .kind = .Channel };
+                            }
+                        } else {
+                            node.inferred_type = .{ .kind = .Channel };
+                        }
+                        is_builtin = true;
                     } else if (std.mem.eql(u8, func_name, "Some")) {
                         if (self.mode == .Nizam and !self.is_option_imported) {
                             std.debug.print("Type Error: 'Some' requires an explicit import in Nizam (e.g. from std.option import Option)\n", .{});
@@ -2733,6 +2749,60 @@ pub const TypeChecker = struct {
                         std.debug.print("Type Error: Dict has no method named '{s}'\n", .{m.method_name});
                         return error.TypeMismatch;
                     }
+                } else if (rec_type.kind == .Channel) {
+                    m.is_dynamic = false;
+                    if (std.mem.eql(u8, m.method_name, "send")) {
+                        if (m.arguments.len != 1) {
+                            std.debug.print("Type Error: Channel.send expects 1 argument, got {d}\n", .{m.arguments.len});
+                            return error.TypeMismatch;
+                        }
+                        try self.checkNode(m.arguments[0]);
+                        node.inferred_type = .{ .kind = .Void };
+                    } else if (std.mem.eql(u8, m.method_name, "recv")) {
+                        if (m.arguments.len != 0) {
+                            std.debug.print("Type Error: Channel.recv expects 0 arguments, got {d}\n", .{m.arguments.len});
+                            return error.TypeMismatch;
+                        }
+                        const inner_t = if (rec_type.payload) |p| p.* else types.Type{ .kind = .Any };
+                        node.inferred_type = inner_t;
+                    } else if (std.mem.eql(u8, m.method_name, "try_send")) {
+                        if (m.arguments.len != 1) {
+                            std.debug.print("Type Error: Channel.try_send expects 1 argument, got {d}\n", .{m.arguments.len});
+                            return error.TypeMismatch;
+                        }
+                        try self.checkNode(m.arguments[0]);
+                        node.inferred_type = .{ .kind = .Boolean };
+                    } else if (std.mem.eql(u8, m.method_name, "try_recv")) {
+                        if (m.arguments.len != 0) {
+                            std.debug.print("Type Error: Channel.try_recv expects 0 arguments, got {d}\n", .{m.arguments.len});
+                            return error.TypeMismatch;
+                        }
+                        const inner_t = if (rec_type.payload) |p| p.* else types.Type{ .kind = .Any };
+                        const opt_payload = try self.allocator.create(types.Type);
+                        opt_payload.* = inner_t;
+                        node.inferred_type = .{ .kind = .Option, .payload = opt_payload };
+                    } else if (std.mem.eql(u8, m.method_name, "close")) {
+                        if (m.arguments.len != 0) {
+                            std.debug.print("Type Error: Channel.close expects 0 arguments, got {d}\n", .{m.arguments.len});
+                            return error.TypeMismatch;
+                        }
+                        node.inferred_type = .{ .kind = .Void };
+                    } else if (std.mem.eql(u8, m.method_name, "is_closed")) {
+                        if (m.arguments.len != 0) {
+                            std.debug.print("Type Error: Channel.is_closed expects 0 arguments, got {d}\n", .{m.arguments.len});
+                            return error.TypeMismatch;
+                        }
+                        node.inferred_type = .{ .kind = .Boolean };
+                    } else if (std.mem.eql(u8, m.method_name, "length") or std.mem.eql(u8, m.method_name, "len") or std.mem.eql(u8, m.method_name, "capacity") or std.mem.eql(u8, m.method_name, "cap")) {
+                        if (m.arguments.len != 0) {
+                            std.debug.print("Type Error: Channel.{s} expects 0 arguments, got {d}\n", .{m.method_name, m.arguments.len});
+                            return error.TypeMismatch;
+                        }
+                        node.inferred_type = .{ .kind = .I64 };
+                    } else {
+                        std.debug.print("Type Error: Channel has no method named '{s}'\n", .{m.method_name});
+                        return error.TypeMismatch;
+                    }
                 } else {
                     m.is_dynamic = false;
                     node.inferred_type = .{ .kind = .Any };
@@ -2822,9 +2892,24 @@ pub const TypeChecker = struct {
                 for (d.values) |v| try self.checkNode(v);
                 
                 // Collect tuple_types to represent K, V
+                var k_type: types.Type = .{ .kind = .Any };
+                var v_type: types.Type = .{ .kind = .Any };
+                for (d.keys, 0..) |k, ki| {
+                    if (k.node_type != .SpreadExpr) {
+                        k_type = k.inferred_type orelse .{ .kind = .Any };
+                        v_type = if (ki < d.values.len) d.values[ki].inferred_type orelse .{ .kind = .Any } else .{ .kind = .Any };
+                        break;
+                    } else if (k.inferred_type) |it| {
+                        if (it.kind == .Dict and it.tuple_types != null and it.tuple_types.?.len == 2) {
+                            k_type = it.tuple_types.?[0];
+                            v_type = it.tuple_types.?[1];
+                            break;
+                        }
+                    }
+                }
                 var kv_types = try self.allocator.alloc(types.Type, 2);
-                kv_types[0] = if (d.keys.len > 0) d.keys[0].inferred_type orelse .{ .kind = .Any } else .{ .kind = .Any };
-                kv_types[1] = if (d.values.len > 0) d.values[0].inferred_type orelse .{ .kind = .Any } else .{ .kind = .Any };
+                kv_types[0] = k_type;
+                kv_types[1] = v_type;
                 
                 node.inferred_type = .{ .kind = .Dict, .tuple_types = kv_types };
             },

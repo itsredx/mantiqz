@@ -2540,11 +2540,18 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
                             }
                         }
                         if (key_node) |k| {
-                            if (val_node) |v| {
+                            if (k.node_type == .SpreadExpr) {
+                                try keys.append(k);
+                                try values.append(k);
+                            } else if (val_node) |v| {
                                 try keys.append(k);
                                 try values.append(v);
                             }
                         }
+                    } else if (std.mem.eql(u8, arg_type, "spread_expr")) {
+                        const sp = try self.lowerSpreadExpr(arg_child);
+                        try keys.append(sp);
+                        try values.append(sp);
                     }
                 }
             }

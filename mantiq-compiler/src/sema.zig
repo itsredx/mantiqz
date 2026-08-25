@@ -197,13 +197,18 @@ pub const SemanticAnalyzer = struct {
         if (mode == .Mantiq) {
             const mantiq_builtins = [_][]const u8{ 
                 "String", "List", "Any",
-                "webstr", "utf16str", "rangestr", "utf32str" 
+                "webstr", "utf16str", "rangestr", "utf32str",
+                "Channel",
             };
             for (mantiq_builtins) |b| {
                 const sym = try allocator.create(symbols.Symbol);
                 sym.* = .{ .name = b, .kind = .Class, .decl_node = null }; // Using Class for generic object types
                 try global_scope.define(sym);
             }
+            // channel() constructor function
+            const chan_sym = try allocator.create(symbols.Symbol);
+            chan_sym.* = .{ .name = "channel", .kind = .Function, .decl_node = null };
+            try global_scope.define(chan_sym);
         }
 
         return .{

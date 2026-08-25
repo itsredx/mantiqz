@@ -43,7 +43,7 @@ pub const TypeKind = enum {
     Slice, List, Tuple, Dict,
     
     // Context & Control
-    Result, Option, Task,
+    Result, Option, Task, Channel,
     
     // Quantum
     QBit, QReg,
@@ -180,6 +180,8 @@ pub fn parseTypeString(type_str: []const u8) TypeKind {
     if (std.mem.startsWith(u8, type_str, "Dict")) return .Dict;
     if (std.mem.startsWith(u8, type_str, "Result")) return .Result;
     if (std.mem.startsWith(u8, type_str, "Option")) return .Option;
+    if (std.mem.startsWith(u8, type_str, "Task") or std.mem.startsWith(u8, type_str, "task")) return .Task;
+    if (std.mem.startsWith(u8, type_str, "Channel") or std.mem.startsWith(u8, type_str, "channel")) return .Channel;
     if (std.mem.startsWith(u8, type_str, "ptr")) return .RawPointer;
     
     if (std.mem.eql(u8, type_str, "qbit")) return .QBit;
@@ -250,7 +252,7 @@ pub fn isCopyType(t: Type) bool {
         .I8, .I16, .I32, .I64, .I128, .ISize,
         .U8, .U16, .U32, .U64, .U128, .USize,
         .F16, .BFloat16, .F32, .F64, .F128,
-        .Char, .Boolean, .Color, .QBit, .QReg, .RawPointer, .Function, .Closure,
+        .Char, .Boolean, .Color, .QBit, .QReg, .RawPointer, .Function, .Closure, .Task, .Channel,
         .CStr, .AsciiStr, .Utf8Str, .WebStr, .RangeStr => return true,
         
         .Enum => {
@@ -354,6 +356,7 @@ pub fn formatType(t: Type) []const u8 {
         .QBit => "qbit", .QReg => "qreg",
         .Error => "Error",
         .Task => "Task",
+        .Channel => "Channel",
         .RawPointer => "ptr",
         .Module => "module",
     };
