@@ -646,6 +646,31 @@ const char* compiler_lib_dir(void) {
 
     return NULL;
 #else
+    static char buf[MAX_PATH];
+    char test[MAX_PATH];
+    DWORD n = GetModuleFileNameA(NULL, buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        char* slash = strrchr(buf, '\\');
+        if (!slash) slash = strrchr(buf, '/');
+        if (slash != NULL) {
+            *slash = '\0';
+            snprintf(test, sizeof(test), "%s\\runtime.c", buf);
+            if (_access(test, 4) == 0) return buf;
+        }
+    }
+    const char* localapp = getenv("LOCALAPPDATA");
+    if (localapp) {
+        snprintf(buf, sizeof(buf), "%s\\mantiq", localapp);
+        snprintf(test, sizeof(test), "%s\\runtime.c", buf);
+        if (_access(test, 4) == 0) return buf;
+    }
+    const char* progfiles = getenv("ProgramFiles");
+    if (progfiles) {
+        snprintf(buf, sizeof(buf), "%s\\mantiq", progfiles);
+        snprintf(test, sizeof(test), "%s\\runtime.c", buf);
+        if (_access(test, 4) == 0) return buf;
+    }
     return NULL;
 #endif
 }
