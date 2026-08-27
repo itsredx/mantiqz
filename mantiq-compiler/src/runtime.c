@@ -585,27 +585,66 @@ const char* compiler_lib_dir(void) {
 #ifndef _WIN32
     static char buf[PATH_MAX];
     char test[PATH_MAX];
+
+    // 1. Check directory of executable (/proc/self/exe)
     ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (n <= 0) {
-        return NULL;
+    if (n > 0) {
+        buf[n] = '\0';
+        char* slash = strrchr(buf, '/');
+        if (slash != NULL) {
+            if (slash == buf) {
+                slash[1] = '\0';
+            } else {
+                *slash = '\0';
+            }
+            snprintf(test, sizeof(test), "%s/runtime.c", buf);
+            if (access(test, R_OK) == 0) {
+                snprintf(test, sizeof(test), "%s/tree_sitter_helper.c", buf);
+                if (access(test, R_OK) == 0) {
+                    snprintf(test, sizeof(test), "%s/libtree-sitter-mantiq.so", buf);
+                    if (access(test, R_OK) == 0) return buf;
+                }
+            }
+        }
     }
-    buf[n] = '\0';
-    char* slash = strrchr(buf, '/');
-    if (slash == NULL) {
-        return NULL;
+
+    // 2. Check user local library: ~/.local/lib/mantiq
+    const char* home = getenv("HOME");
+    if (home) {
+        snprintf(buf, sizeof(buf), "%s/.local/lib/mantiq", home);
+        snprintf(test, sizeof(test), "%s/runtime.c", buf);
+        if (access(test, R_OK) == 0) {
+            snprintf(test, sizeof(test), "%s/tree_sitter_helper.c", buf);
+            if (access(test, R_OK) == 0) {
+                snprintf(test, sizeof(test), "%s/libtree-sitter-mantiq.so", buf);
+                if (access(test, R_OK) == 0) return buf;
+            }
+        }
     }
-    if (slash == buf) {
-        slash[1] = '\0';
-    } else {
-        *slash = '\0';
-    }
+
+    // 3. Check system wide: /usr/local/lib/mantiq
+    snprintf(buf, sizeof(buf), "/usr/local/lib/mantiq");
     snprintf(test, sizeof(test), "%s/runtime.c", buf);
-    if (access(test, R_OK) != 0) return NULL;
-    snprintf(test, sizeof(test), "%s/tree_sitter_helper.c", buf);
-    if (access(test, R_OK) != 0) return NULL;
-    snprintf(test, sizeof(test), "%s/libtree-sitter-mantiq.so", buf);
-    if (access(test, R_OK) != 0) return NULL;
-    return buf;
+    if (access(test, R_OK) == 0) {
+        snprintf(test, sizeof(test), "%s/tree_sitter_helper.c", buf);
+        if (access(test, R_OK) == 0) {
+            snprintf(test, sizeof(test), "%s/libtree-sitter-mantiq.so", buf);
+            if (access(test, R_OK) == 0) return buf;
+        }
+    }
+
+    // 4. Check system wide: /usr/lib/mantiq
+    snprintf(buf, sizeof(buf), "/usr/lib/mantiq");
+    snprintf(test, sizeof(test), "%s/runtime.c", buf);
+    if (access(test, R_OK) == 0) {
+        snprintf(test, sizeof(test), "%s/tree_sitter_helper.c", buf);
+        if (access(test, R_OK) == 0) {
+            snprintf(test, sizeof(test), "%s/libtree-sitter-mantiq.so", buf);
+            if (access(test, R_OK) == 0) return buf;
+        }
+    }
+
+    return NULL;
 #else
     return NULL;
 #endif
