@@ -706,20 +706,22 @@ pub const SemanticAnalyzer = struct {
                         var s: ?*symbols.Scope = self.current_scope;
                         while (s != null and s != resolved.scope) : (s = s.?.parent) {
                             if (s.?.closure_node) |cl_node| {
-                                var found = false;
-                                var cl = &cl_node.data.ClosureExpr;
-                                if (cl.captured_vars == null) {
-                                    cl.captured_vars = &[_][]const u8{};
-                                }
-                                for (cl.captured_vars.?) |cv| {
-                                    if (std.mem.eql(u8, cv, id.name)) found = true;
-                                }
-                                if (!found) {
-                                    ast.debugPrint("CAPTURING {s} in closure!\n", .{id.name});
-                                    var new_caps = std.ArrayList([]const u8).init(self.allocator);
-                                    try new_caps.appendSlice(cl.captured_vars.?);
-                                    try new_caps.append(id.name);
-                                    cl.captured_vars = try new_caps.toOwnedSlice();
+                                if (cl_node.node_type == .ClosureExpr) {
+                                    var found = false;
+                                    var cl = &cl_node.data.ClosureExpr;
+                                    if (cl.captured_vars == null) {
+                                        cl.captured_vars = &[_][]const u8{};
+                                    }
+                                    for (cl.captured_vars.?) |cv| {
+                                        if (std.mem.eql(u8, cv, id.name)) found = true;
+                                    }
+                                    if (!found) {
+                                        ast.debugPrint("CAPTURING {s} in closure!\n", .{id.name});
+                                        var new_caps = std.ArrayList([]const u8).init(self.allocator);
+                                        try new_caps.appendSlice(cl.captured_vars.?);
+                                        try new_caps.append(id.name);
+                                        cl.captured_vars = try new_caps.toOwnedSlice();
+                                    }
                                 }
                             }
                         }

@@ -3273,8 +3273,13 @@ pub const LLVMCodegen = struct {
                     try std.fmt.format(param_str.writer(), ", {s} %{s}.param", .{ t, param.data.Identifier.name });
                 }
 
+                const ret_t = if (cl.body.node_type == .BlockStmt)
+                    "i32"
+                else
+                    typeToLLVM(self.allocator, cl.body.inferred_type orelse (if (node.inferred_type) |it| if (it.function) |ft| ft.return_type.* else types.Type{ .kind = .I64 } else types.Type{ .kind = .I64 }));
+
                 var outlined_writer = self.out.writer();
-                try outlined_writer.print("define i32 @{s}({s}) {{\n", .{ closure_name, param_str.items });
+                try outlined_writer.print("define {s} @{s}({s}) {{\n", .{ ret_t, closure_name, param_str.items });
                 try outlined_writer.print("entry:\n", .{});
 
                 for (cl.params) |param| {
@@ -3289,13 +3294,13 @@ pub const LLVMCodegen = struct {
                 if (cl.captured_vars) |cvs| {
                     for (cvs, 0..) |cv_name, i| {
                         const cv_scoped = try self.registerVarName(cv_name);
-                        const offset = i * 4;
+                        const offset = i * 8;
                         const ptr_temp = self.nextTemp();
                         try outlined_writer.print("  %t.{d} = getelementptr inbounds i8, ptr %env, i64 {d}\n", .{ ptr_temp, offset });
                         const val_temp = self.nextTemp();
-                        try outlined_writer.print("  %t.{d} = load i32, ptr %t.{d}\n", .{ val_temp, ptr_temp });
-                        try outlined_writer.print("  %{s} = alloca i32\n", .{cv_scoped});
-                        try outlined_writer.print("  store i32 %t.{d}, ptr %{s}\n", .{ val_temp, cv_scoped });
+                        try outlined_writer.print("  %t.{d} = load i64, ptr %t.{d}\n", .{ val_temp, ptr_temp });
+                        try outlined_writer.print("  %{s} = alloca i64\n", .{cv_scoped});
+                        try outlined_writer.print("  store i64 %t.{d}, ptr %{s}\n", .{ val_temp, cv_scoped });
                     }
                 }
 
@@ -3324,17 +3329,17 @@ pub const LLVMCodegen = struct {
                 // Pack environment variables into heap-allocated memory
                 const env_size = if (cl.captured_vars) |cvs| cvs.len else 0;
                 const env_val = if (env_size > 0) b: {
-                    const total_size = env_size * 4; // Each captured var is i32 (4 bytes)
+                    const total_size = env_size * 8; // 8 bytes per slot
                     const malloc_temp = self.nextTemp();
                     try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 {d})\n", .{ malloc_temp, total_size });
 
                     for (cl.captured_vars.?, 0..) |cv_name, i| {
                         const load_temp = self.nextTemp();
                         const cv_scoped = self.getScopedName(cv_name);
-                        try writer.print("  %t.{d} = load i32, ptr %{s}\n", .{ load_temp, cv_scoped });
+                        try writer.print("  %t.{d} = load i64, ptr %{s}\n", .{ load_temp, cv_scoped });
                         const dest_ptr = self.nextTemp();
-                        try writer.print("  %t.{d} = getelementptr inbounds i8, ptr %t.{d}, i64 {d}\n", .{ dest_ptr, malloc_temp, i * 4 });
-                        try writer.print("  store i32 %t.{d}, ptr %t.{d}\n", .{ load_temp, dest_ptr });
+                        try writer.print("  %t.{d} = getelementptr inbounds i8, ptr %t.{d}, i64 {d}\n", .{ dest_ptr, malloc_temp, i * 8 });
+                        try writer.print("  store i64 %t.{d}, ptr %t.{d}\n", .{ load_temp, dest_ptr });
                     }
                     break :b try std.fmt.allocPrint(self.allocator, "%t.{d}", .{malloc_temp});
                 } else "null";
