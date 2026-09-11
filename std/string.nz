@@ -242,7 +242,7 @@ struct StringBuilder:
     // The StringBuilder itself is unaffected and can continue to be used.
     // -----------------------------------------------------------------
     fn builder_to_string(self as ptr[StringBuilder]) as String:
-        return String((deref self).buffer to cstr)
+        return String.make((deref self).buffer to cstr)
 
 // ============================================================================
 // Module-level documentation notes:

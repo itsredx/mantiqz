@@ -1,0 +1,141 @@
+// std/perf.nz — Performance monitoring: high-resolution timing + memory tracking
+// Provides clock_gettime and getrusage wrappers for Nizam programs.
+
+extern fn sprintf(buf as ptr[u8], format as cstr, ...) as i32
+extern fn printf(format as cstr, ...) as i32
+extern fn fflush(stream as ptr) as i32
+
+struct TimeSpec:
+    public var tv_sec as i64
+    public var tv_nsec as i64
+
+struct RUsage:
+    public var ru_utime as TimeSpec
+    public var ru_stime as TimeSpec
+    public var ru_maxrss as i64
+    public var ru_ixrss as i64
+    public var ru_idrss as i64
+    public var ru_isrss as i64
+    public var ru_minflt as i64
+    public var ru_majflt as i64
+    public var ru_nswap as i64
+    public var ru_inblock as i64
+    public var ru_oublock as i64
+    public var ru_msgsnd as i64
+    public var ru_msgrcv as i64
+    public var ru_nsignals as i64
+    public var ru_nvcsw as i64
+    public var ru_nivcsw as i64
+
+extern fn clock_gettime(clk_id as i32, tp as ptr[TimeSpec]) as i32
+extern fn getrusage(who as i32, usage as ptr[RUsage]) as i32
+
+fn get_time_ns() as i64:
+    var ts as TimeSpec = TimeSpec(tv_sec = 0, tv_nsec = 0)
+    let _rc as i32 = clock_gettime(1 to i32, ref ts)
+    return ts.tv_sec * 1000000000 to i64 + ts.tv_nsec
+
+fn get_rss_bytes() as i64:
+    var ru as RUsage = RUsage(
+        ru_utime = TimeSpec(tv_sec = 0, tv_nsec = 0),
+        ru_stime = TimeSpec(tv_sec = 0, tv_nsec = 0),
+        ru_maxrss = 0, ru_ixrss = 0, ru_idrss = 0, ru_isrss = 0,
+        ru_minflt = 0, ru_majflt = 0, ru_nswap = 0, ru_inblock = 0,
+        ru_oublock = 0, ru_msgsnd = 0, ru_msgrcv = 0, ru_nsignals = 0,
+        ru_nvcsw = 0, ru_nivcsw = 0
+    )
+    let _rc as i32 = getrusage(0 to i32, ref ru)
+    return ru.ru_maxrss * 1024 to i64
+
+struct PerfClock:
+    public var start_ns as i64
+    public var label as String
+
+fn start_clock(label as String) as PerfClock:
+    return PerfClock(start_ns = get_time_ns(), label = label)
+
+fn elapsed_ns(clock as PerfClock) as i64:
+    return get_time_ns() - clock.start_ns
+
+struct PhaseReport:
+    public var name as String
+    public var time_ns as i64
+    public var rss_before as i64
+    public var rss_after as i64
+
+struct PerfReport:
+    public var phases as List[PhaseReport]
+    public var total_start_ns as i64
+    public var total_rss_start as i64
+    public var total_time_ns as i64
+
+fn make_perf_report() as PerfReport:
+    return PerfReport(
+        phases = List[PhaseReport](),
+        total_start_ns = get_time_ns(),
+        total_rss_start = get_rss_bytes(),
+        total_time_ns = 0
+    )
+
+fn begin_phase(report as ptr[PerfReport], name as String) as PerfClock:
+    return start_clock(name)
+
+fn end_phase(report as ptr[PerfReport], clock as PerfClock):
+    let elapsed as i64 = elapsed_ns(clock)
+    let rss_now as i64 = get_rss_bytes()
+    let phase as PhaseReport = PhaseReport(
+        name = clock.label,
+        time_ns = elapsed,
+        rss_before = (deref report).total_rss_start,
+        rss_after = rss_now
+    )
+    (deref report).phases.append(phase)
+
+fn finish_report(report as ptr[PerfReport]):
+    (deref report).total_time_ns = get_time_ns() - (deref report).total_start_ns
+
+fn fmt_time(ns as i64) as String:
+    let buf as ptr[u8] = make[u8](64 to usize) to ptr[u8]
+    if ns < 1000 to i64:
+        let _ as i32 = sprintf(buf, "%ld ns" to cstr, ns)
+    elif ns < 1000000 to i64:
+        let _ as i32 = sprintf(buf, "%ld.%ld us" to cstr, ns / 1000 to i64, (ns % 1000 to i64) / 100 to i64)
+    elif ns < 1000000000 to i64:
+        let _ as i32 = sprintf(buf, "%ld.%ld ms" to cstr, ns / 1000000 to i64, (ns % 1000000 to i64) / 100000 to i64)
+    else:
+        let _ as i32 = sprintf(buf, "%ld.%ld s" to cstr, ns / 1000000000 to i64, (ns % 1000000000 to i64) / 100000000 to i64)
+    return String(buf to cstr, strlen(buf to cstr))
+
+fn fmt_bytes(bytes as i64) as String:
+    let buf as ptr[u8] = make[u8](64 to usize) to ptr[u8]
+    if bytes < 1024 to i64:
+        let _ as i32 = sprintf(buf, "%ld B" to cstr, bytes)
+    elif bytes < 1048576 to i64:
+        let _ as i32 = sprintf(buf, "%ld.%ld KB" to cstr, bytes / 1024 to i64, (bytes % 1024 to i64) * 10 to i64 / 1024 to i64)
+    else:
+        let _ as i32 = sprintf(buf, "%ld.%ld MB" to cstr, bytes / 1048576 to i64, (bytes % 1048576 to i64) * 10 to i64 / 1048576 to i64)
+    return String(buf to cstr, strlen(buf to cstr))
+
+extern fn strlen(s as cstr) as usize
+
+fn print_report(report as PerfReport):
+    let _f0 as i32 = printf("\n" to cstr)
+    let _f1 as i32 = printf("┌─ Performance Report ──────────────────────────────────────────┐\n" to cstr)
+    let total_str as String = fmt_time(report.total_time_ns)
+    let _f2 as i32 = printf("│  Total time:   %-47s │\n" to cstr, total_str.data to cstr)
+    let rss_str as String = fmt_bytes(report.total_rss_start)
+    let _f3 as i32 = printf("│  Peak RSS:     %-47s │\n" to cstr, rss_str.data to cstr)
+    let _f4 as i32 = printf("├───────────────────────────────────────────────────────────────┤\n" to cstr)
+    let _f5 as i32 = printf("│  %-25s %12s %12s           │\n" to cstr, "Phase", "Time", "RSS Δ")
+    let _f6 as i32 = printf("├───────────────────────────────────────────────────────────────┤\n" to cstr)
+    var i as i64 = 0 to i64
+    let cnt as i64 = (deref report).phases.length()
+    while i < cnt:
+        let p as PhaseReport = (deref report).phases[i]
+        let time_str as String = fmt_time(p.time_ns)
+        let rss_delta as i64 = p.rss_after - p.rss_before
+        let rss_delta_str as String = fmt_bytes(rss_delta)
+        let _fp as i32 = printf("│  %-25s %12s %+12s           │\n" to cstr, p.name.data to cstr, time_str.data to cstr, rss_delta_str.data to cstr)
+        i = i + 1 to i64
+    let _f7 as i32 = printf("└───────────────────────────────────────────────────────────────┘\n" to cstr)
+    let _f8 as i32 = fflush(None to ptr)
