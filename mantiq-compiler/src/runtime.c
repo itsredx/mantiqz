@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 #include <time.h>
 #ifdef _WIN32
@@ -1888,7 +1889,27 @@ typedef struct MantiqPyWrapper {
 
 #if !defined(__wasi__) && (defined(__GNUC__) || defined(__clang__))
 // Forward declarations for CPython C-API functions (weak symbols to prevent undefined references in standalone non-Python binaries)
+extern void Py_Initialize(void) __attribute__((weak));
+extern int Py_IsInitialized(void) __attribute__((weak));
+extern void* PyImport_ImportModule(const char*) __attribute__((weak));
+extern void* PyObject_GetAttrString(void*, const char*) __attribute__((weak));
+extern void* PyObject_CallObject(void*, void*) __attribute__((weak));
+extern void* PyTuple_New(int64_t) __attribute__((weak));
+extern int PyTuple_SetItem(void*, int64_t, void*) __attribute__((weak));
 extern void Py_IncRef(void*) __attribute__((weak));
+extern void Py_DecRef(void*) __attribute__((weak));
+extern void* PyFloat_FromDouble(double) __attribute__((weak));
+extern void* PyLong_FromLongLong(long long) __attribute__((weak));
+extern void* PyBool_FromLong(long) __attribute__((weak));
+extern void* PyUnicode_FromString(const char*) __attribute__((weak));
+extern void* PyUnicode_FromStringAndSize(const char*, int64_t) __attribute__((weak));
+extern double PyFloat_AsDouble(void*) __attribute__((weak));
+extern long long PyLong_AsLongLong(void*) __attribute__((weak));
+extern int PyObject_IsTrue(void*) __attribute__((weak));
+extern const char* PyUnicode_AsUTF8AndSize(void*, int64_t*) __attribute__((weak));
+extern void* PyList_New(int64_t) __attribute__((weak));
+extern int PyList_SetItem(void*, int64_t, void*) __attribute__((weak));
+extern void PyErr_Print(void) __attribute__((weak));
 extern void PyObject_Free(void*) __attribute__((weak));
 extern void* PyType_GenericNew(void*, void*, void*) __attribute__((weak));
 extern void* PyExc_BufferError __attribute__((weak));
@@ -2049,6 +2070,162 @@ int __mantiq_py_extract_buffer(void* obj, void* py_buf_out, void** out_data, int
     return 0;
 #else
     return -1;
+#endif
+}
+
+// ── Python FFI Phase 5: Embedded Python Runtime Support ─────────────────
+void mantiq_py_init(void) {
+#if !defined(__wasi__)
+    if (!Py_IsInitialized) {
+        fprintf(stderr, "Error: CPython runtime symbols not linked (-lpython3.12 missing)\n");
+        exit(1);
+    }
+    if (!Py_IsInitialized()) {
+        Py_Initialize();
+    }
+#endif
+}
+
+void* mantiq_py_import(const char* name) {
+#if !defined(__wasi__)
+    mantiq_py_init();
+    if (!PyImport_ImportModule) return NULL;
+    void* mod = PyImport_ImportModule(name);
+    if (!mod && PyErr_Print) {
+        PyErr_Print();
+    }
+    return mod;
+#else
+    return NULL;
+#endif
+}
+
+void* mantiq_py_getattr(void* obj, const char* name) {
+#if !defined(__wasi__)
+    if (!obj || !PyObject_GetAttrString) return NULL;
+    void* attr = PyObject_GetAttrString(obj, name);
+    if (!attr && PyErr_Print) {
+        PyErr_Print();
+    }
+    return attr;
+#else
+    return NULL;
+#endif
+}
+
+void* mantiq_py_call(void* callable, void* tuple_args) {
+#if !defined(__wasi__)
+    if (!callable || !PyObject_CallObject) {
+        if (tuple_args && Py_DecRef) Py_DecRef(tuple_args);
+        return NULL;
+    }
+    void* res = PyObject_CallObject(callable, tuple_args);
+    if (!res && PyErr_Print) {
+        PyErr_Print();
+    }
+    if (callable && Py_DecRef) Py_DecRef(callable);
+    if (tuple_args && Py_DecRef) Py_DecRef(tuple_args);
+    return res;
+#else
+    return NULL;
+#endif
+}
+
+void mantiq_py_decref(void* obj) {
+#if !defined(__wasi__)
+    if (obj && Py_DecRef) {
+        Py_DecRef(obj);
+    }
+#endif
+}
+
+void mantiq_py_incref(void* obj) {
+#if !defined(__wasi__)
+    if (obj && Py_IncRef) {
+        Py_IncRef(obj);
+    }
+#endif
+}
+
+double mantiq_py_to_f64(void* obj) {
+#if !defined(__wasi__)
+    if (!obj || !PyFloat_AsDouble) return 0.0;
+    return PyFloat_AsDouble(obj);
+#else
+    return 0.0;
+#endif
+}
+
+int64_t mantiq_py_to_i64(void* obj) {
+#if !defined(__wasi__)
+    if (!obj || !PyLong_AsLongLong) return 0;
+    return (int64_t)PyLong_AsLongLong(obj);
+#else
+    return 0;
+#endif
+}
+
+int32_t mantiq_py_to_i32(void* obj) {
+#if !defined(__wasi__)
+    if (!obj || !PyLong_AsLongLong) return 0;
+    return (int32_t)PyLong_AsLongLong(obj);
+#else
+    return 0;
+#endif
+}
+
+bool mantiq_py_to_bool(void* obj) {
+#if !defined(__wasi__)
+    if (!obj || !PyObject_IsTrue) return false;
+    return PyObject_IsTrue(obj) != 0;
+#else
+    return false;
+#endif
+}
+
+const char* mantiq_py_to_cstr(void* obj) {
+#if !defined(__wasi__)
+    if (!obj || !PyUnicode_AsUTF8AndSize) return "";
+    int64_t size = 0;
+    const char* utf8 = PyUnicode_AsUTF8AndSize(obj, &size);
+    if (!utf8 || size < 0) return "";
+    return utf8;
+#else
+    return "";
+#endif
+}
+
+void* mantiq_py_box_list_f64(double* items, int64_t count) {
+#if !defined(__wasi__)
+    if (!PyList_New) return NULL;
+    void* list = PyList_New(count > 0 ? count : 0);
+    if (!list) return NULL;
+    if (items && count > 0 && PyFloat_FromDouble && PyList_SetItem) {
+        for (int64_t i = 0; i < count; i++) {
+            void* f_obj = PyFloat_FromDouble(items[i]);
+            PyList_SetItem(list, i, f_obj);
+        }
+    }
+    return list;
+#else
+    return NULL;
+#endif
+}
+
+void* mantiq_py_box_list_i64(int64_t* items, int64_t count) {
+#if !defined(__wasi__)
+    if (!PyList_New) return NULL;
+    void* list = PyList_New(count > 0 ? count : 0);
+    if (!list) return NULL;
+    if (items && count > 0 && PyLong_FromLongLong && PyList_SetItem) {
+        for (int64_t i = 0; i < count; i++) {
+            void* i_obj = PyLong_FromLongLong((long long)items[i]);
+            PyList_SetItem(list, i, i_obj);
+        }
+    }
+    return list;
+#else
+    return NULL;
 #endif
 }
 
