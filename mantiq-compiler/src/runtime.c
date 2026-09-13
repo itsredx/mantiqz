@@ -1850,3 +1850,205 @@ int32_t nizam_get_terminal_width(void) {
 #endif
     return 84;
 }
+
+// ── Python FFI Buffer Protocol & Shared Ownership ─────────────────────
+
+typedef struct MantiqBufferOwner {
+    int32_t ref_count;              // Shared atomic reference count
+    void* data_ptr;                 // Raw contiguous element buffer
+    size_t element_count;           // Number of elements
+    uint32_t element_size;          // Element size in bytes
+    char format_code[8];            // Format code (e.g. "d", "f", "q", "i")
+    void (*destructor)(void* data); // Optional destructor callback
+    int64_t shape[1];               // 1D shape storage for Py_buffer
+    int64_t strides[1];             // 1D strides storage for Py_buffer
+} MantiqBufferOwner;
+
+typedef struct MantiqPyBuffer {
+    void *buf;
+    void *obj;                      // Owning PyObject* reference
+    int64_t len;
+    int64_t itemsize;
+    int32_t readonly;
+    int32_t ndim;
+    char *format;
+    int64_t *shape;
+    int64_t *strides;
+    int64_t *suboffsets;
+    void *internal;
+} MantiqPyBuffer;
+
+typedef struct MantiqPyWrapper {
+    int64_t ob_refcnt;
+    void *ob_type;
+    MantiqBufferOwner *owner;
+    uint8_t is_owned;
+    uint8_t pad[7];
+} MantiqPyWrapper;
+
+#if !defined(__wasi__) && (defined(__GNUC__) || defined(__clang__))
+// Forward declarations for CPython C-API functions (weak symbols to prevent undefined references in standalone non-Python binaries)
+extern void Py_IncRef(void*) __attribute__((weak));
+extern void PyObject_Free(void*) __attribute__((weak));
+extern void* PyType_GenericNew(void*, void*, void*) __attribute__((weak));
+extern void* PyExc_BufferError __attribute__((weak));
+extern void* PyExc_TypeError __attribute__((weak));
+extern void PyErr_SetString(void*, const char*) __attribute__((weak));
+extern int PyObject_GetBuffer(void*, void*, int) __attribute__((weak));
+extern void PyBuffer_Release(void*) __attribute__((weak));
+#endif
+
+MantiqBufferOwner* mantiq_buffer_owner_create(void* data, size_t count, uint32_t elem_sz, const char* fmt) {
+    MantiqBufferOwner* owner = (MantiqBufferOwner*)mantiq_malloc((int64_t)sizeof(MantiqBufferOwner));
+    if (!owner) return NULL;
+    owner->ref_count = 1;
+    owner->data_ptr = data;
+    owner->element_count = count;
+    owner->element_size = elem_sz;
+    memset(owner->format_code, 0, sizeof(owner->format_code));
+    if (fmt) {
+        strncpy(owner->format_code, fmt, sizeof(owner->format_code) - 1);
+    } else {
+        owner->format_code[0] = 'B';
+    }
+    owner->destructor = NULL;
+    owner->shape[0] = (int64_t)count;
+    owner->strides[0] = (int64_t)elem_sz;
+    return owner;
+}
+
+void mantiq_buffer_owner_retain(MantiqBufferOwner* owner) {
+    if (!owner) return;
+    __atomic_add_fetch(&owner->ref_count, 1, __ATOMIC_SEQ_CST);
+}
+
+void mantiq_buffer_owner_release(MantiqBufferOwner* owner) {
+    if (!owner) return;
+    int32_t rc = __atomic_sub_fetch(&owner->ref_count, 1, __ATOMIC_SEQ_CST);
+    if (rc <= 0) {
+        if (owner->destructor) {
+            owner->destructor(owner->data_ptr);
+        } else if (owner->data_ptr) {
+            mantiq_free(owner->data_ptr);
+        }
+        mantiq_free(owner);
+    }
+}
+
+int __mantiq_py_bf_getbuffer(void* exporter, void* view_ptr, int flags) {
+#if !defined(__wasi__)
+    if (!exporter || !view_ptr) {
+        if (&PyExc_BufferError && PyExc_BufferError && PyErr_SetString) {
+            PyErr_SetString(PyExc_BufferError, "exporter or view is null");
+        }
+        return -1;
+    }
+    MantiqPyWrapper* wrap = (MantiqPyWrapper*)exporter;
+    MantiqBufferOwner* owner = wrap->owner;
+    if (!owner || !owner->data_ptr) {
+        if (&PyExc_BufferError && PyExc_BufferError && PyErr_SetString) {
+            PyErr_SetString(PyExc_BufferError, "Buffer is null or uninitialized");
+        }
+        return -1;
+    }
+
+    MantiqPyBuffer* view = (MantiqPyBuffer*)view_ptr;
+    view->buf = owner->data_ptr;
+    view->obj = exporter;
+    if (Py_IncRef) {
+        Py_IncRef(exporter);
+    }
+
+    view->len = (int64_t)(owner->element_count * owner->element_size);
+    view->itemsize = (int64_t)owner->element_size;
+    view->readonly = 0;
+    view->ndim = 1;
+    view->format = (flags & 0x0004 /* PyBUF_FORMAT */) ? owner->format_code : NULL;
+    view->shape = (flags & (0x0010 | 0x0008) /* PyBUF_ND | PyBUF_STRIDES */) ? &owner->shape[0] : NULL;
+    view->strides = (flags & 0x0010 /* PyBUF_STRIDES */) ? &owner->strides[0] : NULL;
+    view->suboffsets = NULL;
+    view->internal = (void*)owner;
+
+    mantiq_buffer_owner_retain(owner);
+    return 0;
+#else
+    return -1;
+#endif
+}
+
+void __mantiq_py_bf_releasebuffer(void* exporter, void* view_ptr) {
+    (void)view_ptr;
+    if (!exporter) return;
+    MantiqPyWrapper* wrap = (MantiqPyWrapper*)exporter;
+    if (wrap->owner) {
+        mantiq_buffer_owner_release(wrap->owner);
+    }
+}
+
+void __mantiq_py_tp_dealloc_buffer(void* self) {
+#if !defined(__wasi__)
+    if (!self) return;
+    MantiqPyWrapper* wrap = (MantiqPyWrapper*)self;
+    if (wrap->owner) {
+        mantiq_buffer_owner_release(wrap->owner);
+        wrap->owner = NULL;
+    }
+    if (PyObject_Free) {
+        PyObject_Free(self);
+    }
+#endif
+}
+
+void* __mantiq_py_wrap_buffer(void* data, size_t count, uint32_t elem_sz, const char* fmt, void* type_obj) {
+#if !defined(__wasi__)
+    if (!type_obj || !PyType_GenericNew) return NULL;
+    MantiqPyWrapper* obj = (MantiqPyWrapper*)PyType_GenericNew(type_obj, NULL, NULL);
+    if (!obj) return NULL;
+
+    MantiqBufferOwner* owner = mantiq_buffer_owner_create(data, count, elem_sz, fmt);
+    obj->owner = owner;
+    obj->is_owned = 1;
+    return (void*)obj;
+#else
+    return NULL;
+#endif
+}
+
+int __mantiq_py_extract_buffer(void* obj, void* py_buf_out, void** out_data, int64_t* out_len, uint32_t expected_elem_sz, const char* expected_fmt) {
+#if !defined(__wasi__)
+    (void)expected_fmt;
+    if (!obj || !py_buf_out || !out_data || !out_len || !PyObject_GetBuffer) {
+        if (&PyExc_TypeError && PyExc_TypeError && PyErr_SetString) {
+            PyErr_SetString(PyExc_TypeError, "Null argument passed to buffer extractor");
+        }
+        return -1;
+    }
+
+    MantiqPyBuffer* view = (MantiqPyBuffer*)py_buf_out;
+    int ret = PyObject_GetBuffer(obj, (void*)view, 0x001c /* PyBUF_STRIDES | PyBUF_FORMAT */);
+    if (ret != 0) {
+        return -1;
+    }
+
+    if (expected_elem_sz > 0 && view->itemsize != (int64_t)expected_elem_sz) {
+        if (PyBuffer_Release) {
+            PyBuffer_Release((void*)view);
+        }
+        if (&PyExc_TypeError && PyExc_TypeError && PyErr_SetString) {
+            PyErr_SetString(PyExc_TypeError, "Buffer element size mismatch");
+        }
+        return -1;
+    }
+
+    *out_data = view->buf;
+    if (view->itemsize > 0) {
+        *out_len = view->len / view->itemsize;
+    } else {
+        *out_len = view->len;
+    }
+    return 0;
+#else
+    return -1;
+#endif
+}
+
