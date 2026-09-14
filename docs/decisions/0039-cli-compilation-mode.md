@@ -1,103 +1,125 @@
-# Decision 0039: CLI Compilation and Execution Modes
+# Decision 0039: CLI Driver Compilation, Target Architecture, and Execution Modes
 
 ## Context
 
-To prepare for compiler self-hosting, the Mantiq/Nizam compiler needs a robust CLI capable of compiling source files directly into standalone native executables (AOT) and running them directly via JIT execution.
+To support standalone systems programming, cross-compilation, in-browser WebAssembly execution, and Python C-extension packaging, the self-hosted Mantiq/Nizam compiler requires a robust CLI driver.
 
-Currently, the compiler's CLI only supports:
-1. `repl` mode (`mantiq repl [nizam]`)
-2. `test-suite` mode (runs inline integration tests when no arguments are provided)
-3. Direct file invocation, which runs both JIT and AOT compilation under `testPipeline` and prints verbose test diagnostics to `stdout`.
-
-We need dedicated `build` and `run` commands that compile and run programs cleanly, support custom output names (`-o`), pass arguments through to the target program, and suppress test-suite diagnostics.
+Historically, the compiler's CLI began as an interactive REPL and test runner inside the bootstrap compiler. As the self-hosted compiler (`src/main.nz`) converged, the CLI transitioned to an AOT compiler and multi-target runner capable of compiling source files directly into standalone native executables, WebAssembly modules, and CPython C-extension shared libraries without test-suite noise.
 
 ---
 
-## Proposed CLI Design
+## CLI Design & Command Reference
 
-The command-line syntax supports dual compiler executables (`mantiq` and `nizam`):
+The command-line driver supports dual compiler executables (`nizam` for strict mode default and `mantiq` for dynamic mode default):
 
 ```bash
-# Default (runs interactive REPL in the respective mode)
-$ mantiq
-$ nizam
-
 # Compilation (AOT)
-$ mantiq build <input_file> [-o <output_file>] [-target <target>] [--show-ir] [--debug]
-$ nizam build <input_file> [-o <output_file>] [-target <target>] [--show-ir] [--debug]
+$ nizam build <input_file> [-o <output_file>] [--target <triple>] [--lib-dir <dir>] [--profile]
+$ mantiq build <input_file> [-o <output_file>] [--target <triple>] [--lib-dir <dir>] [--profile]
 
-# Execution (JIT)
-$ mantiq run <input_file> [--show-ir] [--debug] [program_arguments...]
-$ nizam run <input_file> [--show-ir] [--debug] [program_arguments...]
+# Execution (Compile & Run)
+$ nizam run <input_file> [--target <triple>] [--lib-dir <dir>] [--profile]
+$ mantiq run <input_file> [--target <triple>] [--lib-dir <dir>] [--profile]
 
-# Interactive REPL (explicitly choosing mode)
-$ mantiq repl [nizam|mantiq] [--show-ir] [--debug]
-$ nizam repl [nizam|mantiq] [--show-ir] [--debug]
-
-# Run Integration Tests
-$ mantiq test
-$ nizam test
+# Version Information
+$ nizam version
+$ nizam --version
 ```
-
-### Semantics
-
-1. **Default Mode Selection (by binary name):**
-   - If the compiler binary name (`args[0]`) contains `nizam`, it defaults the language mode to **Nizam**.
-   - Otherwise, it defaults the language mode to **Mantiq**.
-
-2. **Language Mode Inference (by file extension):**
-   - File extension `.nz` compiles in strict **Nizam** mode.
-   - File extension `.mq` compiles in dynamic **Mantiq** mode.
-   - Files with no extension or unknown extensions default to the binary-defined mode.
-
-3. **Portability and Self-Containment:**
-   - The compiler runtime helper (`runtime.c`) is embedded directly into the compiler executables (`mantiq` and `nizam`) using `@embedFile`.
-   - The executables can be moved to any directory (e.g. `$HOME` or a different Linux system) and will compile/run program code without requiring source directory paths.
-   - Dependencies: The host machine must have `zig` (for C compilation toolchain) and `libmimalloc` (development package) installed.
-
-4. **Diagnostics Suppression:**
-   - Direct execution via `build` and `run` will suppress all parser/compilation status output on `stdout` (e.g. `=== Test: ... ===`, `LOWERTYPE: ...`, `Compilation pipeline successful!`).
-   - Compiler errors (syntax errors, type mismatches, etc.) are printed to `stderr` and the compiler exits with code `1`.
-
-5. **Output File Naming (`build`):**
-   - If `-o <output_file>` is specified, the native binary is written to that path.
-   - Otherwise, the output filename defaults to the input filename with the extension removed.
 
 ---
 
-## Implementation Details
+## Supported Targets (`--target`)
 
-### Pipeline Extraction
-The compiler pipeline steps in `main.zig` will be refactored into a reusable function:
-```zig
-fn runPipeline(
-    allocator: std.mem.Allocator,
-    p: *parser.Parser,
-    source_code: []const u8,
-    mode: ast.LanguageMode,
-    file_path: []const u8,
-) ![]const u8 // returns LLVM IR
-```
+The compiler abstracts code generation and data layouts via `src/layout.nz` and `src/codegen.nz`, targeting three primary environments:
 
-### Build command
-`build` invokes `runPipeline`, passes the LLVM IR to `AOTCompiler.compile()`, and exits. JIT execution is skipped.
+| Target Triple | Output Artifact | Default Name | Linker / Runtime Engine | Execution Model (`run`) |
+| :--- | :--- | :--- | :--- | :--- |
+| `x86_64-unknown-linux-gnu` *(default)* | Native ELF 64-bit Executable | `a.out` | `clang` / `zig cc` (`-no-pie`, `-lm`) | Direct OS execution via `/tmp/mantiq_run_tmp_<pid>` |
+| `wasm32-wasi` / `wasm` | WebAssembly 1.0 Linear Module | `a.wasm` | `zig cc` (`-target wasm32-wasi`, `-O2`) | Node.js WASI Preview 1 runner |
+| `python-ext` | PEP 384 Limited API Shared Library | `<module>.abi3.so` | `clang` / `zig cc` (`-shared`, `-fPIC`) | Dynamic CPython 3 test loader inspecting module exports |
 
-### Run command
-`run` invokes `runPipeline`, evaluates the LLVM IR using `JITCompiler.evaluate()`, and exits. AOT compilation is skipped.
+---
+
+## Options & Flags
+
+1. **`-o <output_file>`**:
+   - Specifies the destination output path.
+   - If omitted:
+     - Native target defaults to `a.out`.
+     - `wasm32-wasi` target defaults to `a.wasm`.
+     - `python-ext` target extracts the module name from the input path and defaults to `<module>.abi3.so`.
+
+2. **`--target <triple>`**:
+   - Configures the backend architecture, calling convention, and struct layout (e.g. 32-bit linear memory vs 64-bit SysV x86_64 vs PEP 384 abi3).
+
+3. **`--lib-dir <dir>`**:
+   - Explicitly configures the search path for standard library modules (`std/`) and dynamic helper libraries (`libtree-sitter-mantiq.so`).
+
+4. **`--profile`**:
+   - Enables compiler micro-profiling ([perf_init](file:///mantiq/src/main.nz), [perf_print](file:///mantiq/src/main.nz)) measuring nanosecond latency across each compiler pipeline stage:
+     - Lexical parsing & Tree-Sitter CST generation
+     - CST lowering & macro expansion
+     - Semantic analysis & symbol table resolution
+     - Type checking & monomorphization
+     - SSA LLVM IR code generation
+     - Native linker invocation (`clang` / `zig cc`)
+
+---
+
+## Language Mode Detection
+
+The compiler automatically infers language mode using the following hierarchy:
+
+1. **File Extension**:
+   - `.nz` files compile in strict **Nizam** mode (manual memory ownership, borrow checking, no implicit heap allocations, `class` disallowed).
+   - `.mq` files compile in dynamic **Mantiq** mode (gradual typing, closures, classes, runtime polymorphism).
+2. **Binary Invocation Name**:
+   - If the compiler binary name (`argv[0]`) contains `nizam`, unrecognized extensions default to **Nizam**.
+   - Otherwise, unrecognized extensions default to **Mantiq**.
 
 ---
 
 ## Examples
 
-### Compilation
+### 1. Compiling & Running Native Executables
 ```bash
-$ mantiq build hello.nz -o hello
-$ ./hello
-Hello, World!
+# Compile to custom binary
+$ nizam build src/app.nz -o my_app
+$ ./my_app
+
+# Compile and immediately run
+$ nizam run src/app.nz
 ```
 
-### Direct JIT Execution
+### 2. Compiling for WebAssembly
 ```bash
-$ mantiq run hello.nz
-Hello, World!
+$ nizam build app.nz --target wasm32-wasi -o app.wasm --lib-dir mantiq
+$ node --experimental-wasi-unstable-preview1 -e '
+  const { WASI } = require("wasi");
+  const fs = require("fs");
+  const wasi = new WASI({ version: "preview1", args: ["app.wasm"] });
+  const wasm = new WebAssembly.Module(fs.readFileSync("app.wasm"));
+  const inst = new WebAssembly.Instance(wasm, wasi.getImportObject());
+  wasi.start(inst);'
+```
+
+### 3. Compiling CPython C-Extensions
+```bash
+$ nizam build math_ops.nz --target python-ext
+# Produces math_ops.abi3.so
+
+$ python3 -c "import math_ops; print(math_ops.add(10, 20))"
+```
+
+### 4. Profiling Compilation Performance
+```bash
+$ nizam build app.nz --profile
+# Outputs:
+# [perf] parse: 4.2ms
+# [perf] lower: 2.1ms
+# [perf] sema:  3.5ms
+# [perf] type:  5.1ms
+# [perf] codegen: 12.3ms
+# [perf] link:  45.8ms
+# Successfully compiled app.nz -> a.out
 ```

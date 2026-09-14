@@ -45,6 +45,8 @@ import[vendor] json                      // vendor-tagged import
 import[path] "/home/lib/mylib.nz"        // exact path import
 import[c] "sqlite3"                      // C library link import
 import[pkg] libcurl                      // system package import
+import[python] numpy as np               // dynamic CPython module import
+import[python] math as pymath            // embedded Python runtime import
 
 // Form 2: selective import
 from math import pi, sin, cos            // import specific symbols
@@ -62,6 +64,10 @@ import sin from math                     // import single symbol
 | `[path]` | Exact file path — no search path resolution |
 | `[c]` | C library — link declaration, no parsing (LLVM `-l`) |
 | `[pkg]` | System package — link declaration only |
+| `[python]` | Dynamic CPython module import via embedded Python runtime (Phase 5 FFI) |
+
+> [!TIP]
+> For zero-overhead, statically-typed Python interoperability with callable caching, use `extern[python]` declarations instead of dynamic `import[python]`. See [specification/0012-functions.md](file:///home/red-x/projects/desktop/mantiq_nizam/mantiq/docs/specification/0012-functions.md#63-tier-2-static-typed-python-ffi-externpython).
 
 ### 1.4 Link Declaration
 

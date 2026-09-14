@@ -316,11 +316,23 @@ Lifetime annotations are parsed and stored but **not yet enforced** by the borro
 - **Size**: 8 bytes
 - **Usage**: Represents a module scope as a type value.
 
+### 9.6 `PyObject`
+
+- **Layout**: `ptr` — 8 bytes (on x86_64)
+- **LLVM IR**: `ptr`
+- **Copy/Move**: Move
+- **Usage**: Foreign object representation for CPython interop (Phase 5 Embedded Python & Tier 2 FFI). Represents a raw or managed `PyObject*` handle.
+- **Semantics**:
+  - Supports dynamic attribute resolution (`obj.attr`).
+  - Supports dynamic method/callable invocation (`obj.method(arg1, arg2)`).
+  - Can be passed directly to and returned from `extern[python]` function calls.
+  - Transparently unboxes to Nizam primitive types (`i64`, `f64`, `bool`, `cstr`, `String`) via compiler type coercion.
+
 ---
 
 ## 10. LLVM Type Mapping Reference
 
-The `typeToLLVM` function in `codegen.zig` maps each `TypeKind` to its LLVM IR type string:
+The `llvm_type` function in `src/codegen.nz` maps each `TypeKind` to its LLVM IR type string:
 
 | TypeKind | LLVM IR Type | Size (x86_64) |
 |----------|-------------|---------------|
@@ -336,7 +348,7 @@ The `typeToLLVM` function in `codegen.zig` maps each `TypeKind` to its LLVM IR t
 | `F64` | `double` | 8 |
 | `F128` | `fp128` | 16 |
 | `String` | `{ ptr, i64, i64 }` | 24 |
-| `CStr` | `ptr` | 8 |
+| `CStr` / `RawPointer` / `PyObject` | `ptr` | 8 |
 | `AsciiStr` / `Utf8Str` / `WebStr` / `RangeStr` | `{ ptr, i64 }` | 16 |
 | `List` (dynamic) | `{ ptr, i64, i64 }` | 24 |
 | `List` (fixed) | `[N x T]` | `N * sizeof(T)` |

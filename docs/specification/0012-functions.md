@@ -291,32 +291,108 @@ Can also be used as a statement (fire-and-forget).
 
 ## 6. Extern Functions (FFI)
 
-### 6.1 Declaration
+Mantiq and Nizam provide two distinct foreign function interface (FFI) layers:
+1. **C FFI (`extern fn`)**: Direct, zero-overhead ABI invocation of native C functions.
+2. **Tier 2 Python FFI (`extern[python]`)**: Static typed declarations with automatic CPython object unboxing and lazy pointer caching.
+
+### 6.1 Native C FFI Declarations
+
+Native C functions are declared using `extern fn` without a function body:
 
 ```nizam
-extern fn time(t as i64) -> i64:
-    pass
+// Standard scalar C functions
+extern fn strcmp(s1 as cstr, s2 as cstr) as i32
+extern fn sqrt(x as f64) as f64
+extern fn free(p as ptr)
 
-extern fn sqrt(x as f64) -> f64:
-    pass
+// Variadic C functions (using '...')
+extern fn printf(format as cstr, ...) as i32
+extern fn sprintf(buf as ptr[u8], format as cstr, ...) as i32
 ```
 
-The `extern` modifier generates a `declare` in LLVM IR instead of a `define`. The body must be `pass` (or omitted). The function symbol name preserves the original name (no module mangling).
+- **LLVM IR Generation**: Generates `declare <ret> @<name>(<params>)` rather than a `define`.
+- **Calling Convention**: Uses the host SysV x86_64 calling convention (or WASM ABI).
+- **Environment Pointer Omission**: Unlike internal Nizam functions (which receive a hidden `%env` pointer for closures), `extern` function signatures match the C signature directly.
+- **Body Requirement**: No body is required (or `pass` for backward compatibility).
 
-### 6.2 Linking
+### 6.2 External Library Linking
 
-External libraries are linked using `link` declarations:
+External native libraries are linked using `link` or `link[c]` declarations:
 
 ```nizam
 link "m"
 link "pthread"
+link[c] "sqlite3"
 ```
 
-These map to `-l` flags during AOT compilation.
+These translate directly to `-l` linker arguments during compilation (`-lm`, `-lpthread`, `-lsqlite3`).
 
-### 6.3 C ABI
+### 6.3 Tier 2 Static Typed Python FFI (`extern[python]`)
 
-Extern functions follow the C calling convention (SysV x86_64 on Linux). Types are laid out in a C-compatible manner in `layout.zig`.
+For seamless, type-safe interoperability with Python libraries from native Nizam, the compiler supports `extern[python]` declarations.
+
+#### Block Syntax
+Multiple functions from the same Python module can be grouped under an indented block:
+
+```nizam
+extern[python] "math":
+    fn sqrt(x as f64) as f64
+    fn pow(base as f64, exp as f64) as f64
+    fn floor(x as f64) as f64
+
+extern[python] "os.path":
+    fn join(a as cstr, b as cstr) as cstr
+    fn dirname(p as cstr) as cstr
+
+extern[python] "builtins":
+    fn abs(x as i64) as i64
+```
+
+#### Inline Syntax
+Individual functions can be declared inline:
+
+```nizam
+extern[python] "math" fn ceil(x as f64) as f64
+extern[python] "math" fn isnan(x as f64) as bool
+extern[python] "numpy" fn mean(data as PyObject) as f64
+```
+
+#### Supported Types & Automatic Unboxing
+The code generator (`src/codegen.nz:emit_python_extern_fun`) automatically handles boxing arguments into Python C-API structures and unboxing return values:
+
+| Nizam Type | Parameter Marshaling | Return Unboxing |
+| :--- | :--- | :--- |
+| `f64` / `f32` | `PyFloat_FromDouble` | `PyFloat_AsDouble` |
+| `i64` / `i32` | `PyLong_FromLongLong` | `PyLong_AsLongLong` |
+| `bool` | `PyBool_FromLong` | `PyObject_IsTrue` |
+| `cstr` | `PyUnicode_FromString` | `PyUnicode_AsUTF8` |
+| `String` | Aggregate `{ ptr, i64, i64 }` → C string | Copies buffer via `strdup` |
+| `PyObject` | Retains raw reference | Returns borrowed `PyObject*` |
+
+#### Lazy Callable Caching (`@__nizam_py_cached_*`)
+To prevent repeated module lookups and attribute resolutions on every call, the compiler generates a static internal pointer:
+```llvm
+@__nizam_py_cached_sqrt_0 = internal global ptr null
+```
+On the first call, the runtime imports the module (if not already loaded), fetches the attribute, and stores it in the cache pointer. Subsequent calls bypass attribute lookup and execute directly through the cached pointer, achieving near-zero FFI overhead.
+
+### 6.4 Static GIL Safety & the `@nogil` Decorator
+
+When writing performance-critical native routines designed to be called from Python or multi-threaded contexts, functions can be annotated with `@nogil`:
+
+```nizam
+@nogil
+fn compute_heavy_task(data as ptr[f64], count as i64) as f64:
+    var sum as f64 = 0.0
+    var i as i64 = 0
+    while i < count:
+        sum = sum + deref (data + i)
+        i = i + 1
+    return sum
+```
+
+- **Compile-Time Validation (`src/sema.nz`)**: The compiler statically verifies that a `@nogil` function does not allocate CPython objects, call GIL-dependent Python APIs, or reference `PyObject`.
+- **Runtime Threading**: Wraps the call boundary with `Py_BEGIN_ALLOW_THREADS` and `Py_END_ALLOW_THREADS`, freeing CPython OS threads to run truly concurrently.
 
 ---
 
@@ -349,18 +425,19 @@ Both `Function` and `Closure` are Copy types.
 
 ---
 
-## 8. System Modifier Keywords
+## 8. Function Modifiers & Decorators
 
-The following modifiers can appear before function declarations. Currently only `async` and `extern` are implemented; the others are reserved for future use:
+The following modifiers and decorators can appear before function declarations:
 
-| Modifier | Status | Effect |
-|----------|--------|--------|
-| `async` | ✅ Implemented | Wraps return type in `Task[T]` |
-| `extern` | ✅ Implemented | Generates LLVM `declare` (FFI import) |
-| `inline` | 🔲 Reserved | Hint for inlining |
-| `static` | 🔲 Reserved | Internal linkage |
-| `volatile` | 🔲 Reserved | No optimization on calls |
-| `atomic` | 🔲 Reserved | Atomic operation semantics |
+| Modifier / Decorator | Status | Semantics |
+| :--- | :--- | :--- |
+| `extern` | ✅ Implemented | Declares external C or Python function (`declare` in LLVM) |
+| `@nogil` | ✅ Implemented | Statically verifies absence of Python runtime calls and releases CPython GIL |
+| `async` | ✅ Implemented | Coroutine function returning `Task[T]` |
+| `inline` | 🔲 Reserved | Inlining optimization hint |
+| `static` | 🔲 Reserved | Internal module linkage |
+| `volatile` | 🔲 Reserved | Uncached call semantics |
+| `atomic` | 🔲 Reserved | Atomic call synchronization |
 
 ---
 
