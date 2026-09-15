@@ -47,6 +47,9 @@ struct Set[T]:
     public fn __init__(self as ptr[Set[T]]):
         (deref self)._dict = Dict[T, bool]()
 
+    public fn init(self as ptr[Set[T]]):
+        (deref self)._dict = Dict[T, bool]()
+
     public fn __getitem__(self as Set[T], item as T) -> bool:
         return self.has(item)
 
@@ -75,8 +78,8 @@ struct Set[T]:
     //
     // Complexity: O(1) average-case.
     // -----------------------------------------------------------------
-    public fn has(self, item as T) as bool:
-        return self._dict.has(item)
+    public fn has(self as ptr[Set[T]], item as T) as bool:
+        return (deref self)._dict.has(item)
 
     // -----------------------------------------------------------------
     // Set.remove(self as ptr[Set[T]], item) -> bool
@@ -92,8 +95,8 @@ struct Set[T]:
     public fn remove(self as ptr[Set[T]], item as T) as bool:
         return (deref self)._dict.remove(item)
 
-    public fn to_list(self) as List[T]:
-        return self._dict.keys()
+    public fn to_list(self as ptr[Set[T]]) as List[T]:
+        return (deref self)._dict.keys()
 
     // -----------------------------------------------------------------
     // Set.clear(self as ptr[Set[T]])
@@ -108,14 +111,29 @@ struct Set[T]:
         (deref self)._dict.clear()
 
     // -----------------------------------------------------------------
-    // Set.length(self) -> i64
+    // Set.length(self as ptr[Set[T]]) -> i64
     //
     // Return the number of distinct elements currently in the set.
     //
     // Complexity: O(1) (the value is cached by the underlying Dict).
     // -----------------------------------------------------------------
-    public fn length(self) as i64:
-        return self._dict.length()
+    public fn length(self as ptr[Set[T]]) as i64:
+        return (deref self)._dict.length()
+
+    public fn count(self as ptr[Set[T]]) as i64:
+        return (deref self)._dict.length()
+
+    // ── Set Methods ───────────────────────────────────────────────────────────
+    public fn update(self as ptr[Set[T]], other as ptr[Set[T]]):
+        let keys as List[T] = other.to_list()
+        let count as i64 = keys.length()
+        var i as i64 = 0
+        while i < count:
+            self.add(keys[i])
+            i = i + 1 to i64
+
+    public fn discard(self as ptr[Set[T]], item as T):
+        let _ as bool = (deref self)._dict.remove(item)
 
 // ============================================================================
 // Future collection plans (not yet implemented):

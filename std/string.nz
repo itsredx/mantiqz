@@ -18,6 +18,7 @@
 //   drop(ptr)     -> frees a previously allocated buffer
 //   resize(ptr, size) -> resizes an allocation, possibly moving it
 from std.mem import make, drop, resize
+from std.collections import List
 
 // --- External (C library) functions ---
 //
@@ -27,6 +28,8 @@ from std.mem import make, drop, resize
 //         when the regions overlap.
 extern fn strlen(s as cstr) as usize
 extern fn memcpy(dest as ptr, src as ptr, n as usize) as ptr
+extern fn strncmp(s1 as cstr, s2 as cstr, n as usize) as i32
+extern fn strstr(haystack as cstr, needle as cstr) as cstr
 
 // ============================================================================
 // String
@@ -125,6 +128,194 @@ struct String:
         let dest_ptr as ptr[u8] = ref (deref self).data[(deref self).len]
         memcpy(dest_ptr to ptr, (deref other).data to ptr, (deref other).len + 1)
         (deref self).len = new_len
+
+    // ── String Methods ────────────────────────────────────────────────────────
+    public fn startswith(self as String, prefix as cstr) as bool:
+        if prefix to ptr == None:
+            return False
+        let p_len as usize = strlen(prefix)
+        if p_len > self.len:
+            return False
+        if p_len == 0 to usize:
+            return True
+        let res as i32 = strncmp(self.data to cstr, prefix, p_len)
+        return res == 0
+
+    public fn endswith(self as String, suffix as cstr) as bool:
+        if suffix to ptr == None:
+            return False
+        let s_len as usize = strlen(suffix)
+        if s_len > self.len:
+            return False
+        if s_len == 0 to usize:
+            return True
+        let offset as usize = self.len - s_len
+        let offset_ptr as ptr[u8] = ref self.data[offset]
+        let res as i32 = strncmp(offset_ptr to cstr, suffix, s_len)
+        return res == 0
+
+    public fn lower(self as String) as String:
+        if self.len == 0 to usize:
+            return String.make("" to cstr)
+        let new_buf as ptr[u8] = make[u8](self.len + 1 to usize) to ptr[u8]
+        var i as usize = 0
+        while i < self.len:
+            let c as u8 = self.data[i]
+            if c >= 65 to u8 and c <= 90 to u8:
+                new_buf[i] = c + 32 to u8
+            else:
+                new_buf[i] = c
+            i = i + 1 to usize
+        new_buf[self.len] = 0 to u8
+        return String(data = new_buf, len = self.len, capacity = self.len + 1 to usize)
+
+    public fn upper(self as String) as String:
+        if self.len == 0 to usize:
+            return String.make("" to cstr)
+        let new_buf as ptr[u8] = make[u8](self.len + 1 to usize) to ptr[u8]
+        var i as usize = 0
+        while i < self.len:
+            let c as u8 = self.data[i]
+            if c >= 97 to u8 and c <= 122 to u8:
+                new_buf[i] = c - 32 to u8
+            else:
+                new_buf[i] = c
+            i = i + 1 to usize
+        new_buf[self.len] = 0 to u8
+        return String(data = new_buf, len = self.len, capacity = self.len + 1 to usize)
+
+    public fn strip(self as String) as String:
+        if self.len == 0 to usize:
+            return String.make("" to cstr)
+        var start as usize = 0
+        while start < self.len:
+            let c as u8 = self.data[start]
+            if c == 32 to u8 or c == 9 to u8 or c == 10 to u8 or c == 13 to u8:
+                start = start + 1 to usize
+            else:
+                break
+        if start == self.len:
+            return String.make("" to cstr)
+        var end_idx as usize = self.len - 1 to usize
+        while end_idx > start:
+            let c as u8 = self.data[end_idx]
+            if c == 32 to u8 or c == 9 to u8 or c == 10 to u8 or c == 13 to u8:
+                end_idx = end_idx - 1 to usize
+            else:
+                break
+        let sub_len as usize = end_idx - start + 1 to usize
+        let new_buf as ptr[u8] = make[u8](sub_len + 1 to usize) to ptr[u8]
+        let src_start as ptr[u8] = ref self.data[start]
+        memcpy(new_buf to ptr, src_start to ptr, sub_len)
+        new_buf[sub_len] = 0 to u8
+        return String(data = new_buf, len = sub_len, capacity = sub_len + 1 to usize)
+
+    public fn replace(self as String, old_s as cstr, new_s as cstr) as String:
+        if self.len == 0 to usize or old_s to ptr == None:
+            return String.make(self.data to cstr)
+        let old_len as usize = strlen(old_s)
+        if old_len == 0 to usize:
+            return String.make(self.data to cstr)
+        let new_len as usize = if new_s to ptr != None: strlen(new_s) else: 0 to usize
+
+        var count as usize = 0
+        var p as ptr[u8] = self.data
+        let end_p as ptr[u8] = ref self.data[self.len]
+        while p to usize < end_p to usize:
+            let m as cstr = strstr(p to cstr, old_s)
+            if m to ptr == None:
+                break
+            count = count + 1 to usize
+            p = (m to usize + old_len) to ptr[u8]
+
+        if count == 0 to usize:
+            return String.make(self.data to cstr)
+
+        let total_len as usize = self.len + count * new_len - count * old_len
+        let out_buf as ptr[u8] = make[u8](total_len + 1 to usize) to ptr[u8]
+        var out_idx as usize = 0
+        p = self.data
+
+        while p to usize < end_p to usize:
+            let m as cstr = strstr(p to cstr, old_s)
+            if m to ptr == None:
+                let rem_len as usize = (end_p to usize) - (p to usize)
+                let dst_rem as ptr[u8] = ref out_buf[out_idx]
+                memcpy(dst_rem to ptr, p to ptr, rem_len)
+                out_idx = out_idx + rem_len
+                break
+            let seg_len as usize = (m to usize) - (p to usize)
+            if seg_len > 0 to usize:
+                let dst_seg as ptr[u8] = ref out_buf[out_idx]
+                memcpy(dst_seg to ptr, p to ptr, seg_len)
+                out_idx = out_idx + seg_len
+            if new_len > 0 to usize:
+                let dst_new as ptr[u8] = ref out_buf[out_idx]
+                memcpy(dst_new to ptr, new_s to ptr, new_len)
+                out_idx = out_idx + new_len
+            p = (m to usize + old_len) to ptr[u8]
+
+        out_buf[total_len] = 0 to u8
+        return String(data = out_buf, len = total_len, capacity = total_len + 1 to usize)
+
+    public fn split(self as String, sep as cstr) as List[String]:
+        var res as List[String] = List[String]()
+        if self.len == 0 to usize:
+            return res
+        let sep_len as usize = if sep to ptr != None: strlen(sep) else: 0 to usize
+        if sep_len == 0 to usize:
+            res.append(String.make(self.data to cstr))
+            return res
+
+        var cur as ptr[u8] = self.data
+        let end_ptr as ptr[u8] = ref self.data[self.len]
+        while cur to usize < end_ptr to usize:
+            let match as cstr = strstr(cur to cstr, sep)
+            if match to ptr == None:
+                let rem_len as usize = (end_ptr to usize) - (cur to usize)
+                let tmp as ptr[u8] = make[u8](rem_len + 1 to usize) to ptr[u8]
+                memcpy(tmp to ptr, cur to ptr, rem_len)
+                tmp[rem_len] = 0 to u8
+                res.append(String(data = tmp, len = rem_len, capacity = rem_len + 1 to usize))
+                break
+            let seg_len as usize = (match to usize) - (cur to usize)
+            let tmp as ptr[u8] = make[u8](seg_len + 1 to usize) to ptr[u8]
+            memcpy(tmp to ptr, cur to ptr, seg_len)
+            tmp[seg_len] = 0 to u8
+            res.append(String(data = tmp, len = seg_len, capacity = seg_len + 1 to usize))
+            cur = (match to usize + sep_len) to ptr[u8]
+        return res
+
+    public fn join(self as String, parts as List[String]) as String:
+        let count as i64 = parts.length()
+        if count == 0 to i64:
+            return String.make("" to cstr)
+        var total_len as usize = 0
+        var i as i64 = 0
+        while i < count:
+            let item as String = parts[i]
+            total_len = total_len + item.len
+            if i > 0 to i64:
+                total_len = total_len + self.len
+            i = i + 1 to i64
+
+        let out_buf as ptr[u8] = make[u8](total_len + 1 to usize) to ptr[u8]
+        var out_idx as usize = 0
+        i = 0
+        while i < count:
+            if i > 0 to i64 and self.len > 0 to usize:
+                let dst_sep as ptr[u8] = ref out_buf[out_idx]
+                memcpy(dst_sep to ptr, self.data to ptr, self.len)
+                out_idx = out_idx + self.len
+            let item as String = parts[i]
+            if item.len > 0 to usize:
+                let dst_item as ptr[u8] = ref out_buf[out_idx]
+                memcpy(dst_item to ptr, item.data to ptr, item.len)
+                out_idx = out_idx + item.len
+            i = i + 1 to i64
+
+        out_buf[total_len] = 0 to u8
+        return String(data = out_buf, len = total_len, capacity = total_len + 1 to usize)
 
 // ============================================================================
 // StringBuilder
