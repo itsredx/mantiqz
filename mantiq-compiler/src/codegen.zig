@@ -228,7 +228,7 @@ pub const LLVMCodegen = struct {
         // 1. Box to Any ({ ptr, ptr })
         if (std.mem.eql(u8, target_type, "{ ptr, ptr }")) {
             const box_ptr = self.nextTemp();
-            try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 32)\n", .{box_ptr});
+            try writer.print("  %t.{d} = call ptr @mantiq_alloc_box32()\n", .{box_ptr});
             try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ source_type, val, box_ptr });
             const fat_temp1 = self.nextTemp();
             try writer.print("  %t.{d} = insertvalue {{ ptr, ptr }} undef, ptr %t.{d}, 0\n", .{ fat_temp1, box_ptr });
@@ -413,6 +413,7 @@ pub const LLVMCodegen = struct {
         try preamble.writer().print("%Closure = type {{ ptr, ptr }}\n", .{});
         try preamble.writer().print("declare void @__mantiq_parallel_for(i32, i32, ptr, ptr)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_malloc(i64)\n", .{});
+        try preamble.writer().print("declare ptr @mantiq_alloc_box32()\n", .{});
         try preamble.writer().print("declare void @mantiq_free(ptr)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_realloc(ptr, i64)\n", .{});
         try preamble.writer().print("declare void @mantiq_panic(ptr)\n", .{});
@@ -453,6 +454,7 @@ pub const LLVMCodegen = struct {
         try preamble.writer().print("declare i32 @__mantiq_hash_string(ptr, i64)\n", .{});
         try preamble.writer().print("declare i32 @__mantiq_hash_bytes(ptr, i64)\n", .{});
         try preamble.writer().print("declare ptr @__mantiq_dict_create(i32, i32, i32)\n", .{});
+        try preamble.writer().print("declare ptr @__mantiq_dict_create_with_capacity(i32, i32, i32, i32)\n", .{});
         try preamble.writer().print("declare void @__mantiq_dict_set(ptr, ptr, ptr, i32)\n", .{});
         try preamble.writer().print("declare void @__mantiq_dict_keys(ptr, ptr, i32)\n", .{});
         try preamble.writer().print("declare ptr @__mantiq_dict_get(ptr, ptr, i32)\n", .{});
@@ -2065,7 +2067,7 @@ pub const LLVMCodegen = struct {
                 const sig = abi.getRetABI(ret_ast, layout.Target.x86_64_linux);
                 
                 const box_ptr = self.nextTemp();
-                try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 32)\n", .{box_ptr});
+                try writer.print("  %t.{d} = call ptr @mantiq_alloc_box32()\n", .{box_ptr});
                 try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ err_llvm, err_val, box_ptr });
 
                 const fat_temp1 = self.nextTemp();
@@ -3143,7 +3145,7 @@ pub const LLVMCodegen = struct {
                 if (std.mem.eql(u8, target_type, "{ ptr, ptr }")) {
                     const box_ptr = self.nextTemp();
                     // Box the value into a heap allocation to store in the Any fat pointer
-                    try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 32)\n", .{box_ptr});
+                    try writer.print("  %t.{d} = call ptr @mantiq_alloc_box32()\n", .{box_ptr});
                     try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ source_type, operand_val, box_ptr });
                     const fat_temp1 = self.nextTemp();
                     try writer.print("  %t.{d} = insertvalue {{ ptr, ptr }} undef, ptr %t.{d}, 0\n", .{ fat_temp1, box_ptr });
@@ -3604,7 +3606,12 @@ pub const LLVMCodegen = struct {
                         }
                         const dict_ptr = self.nextTemp();
                         const dict_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{dict_ptr});
-                        try writer.print("  {s} = call ptr @__mantiq_dict_create(i32 {d}, i32 {d}, i32 {d})\n", .{ dict_name, k_size, v_size, is_str_flag });
+                        if (c.arguments.len > 0) {
+                            const cap_val = try self.genExpr(c.arguments[0]);
+                            try writer.print("  {s} = call ptr @__mantiq_dict_create_with_capacity(i32 {d}, i32 {d}, i32 {d}, i32 {s})\n", .{ dict_name, k_size, v_size, is_str_flag, cap_val });
+                        } else {
+                            try writer.print("  {s} = call ptr @__mantiq_dict_create(i32 {d}, i32 {d}, i32 {d})\n", .{ dict_name, k_size, v_size, is_str_flag });
+                        }
 
                         const fat1 = self.nextTemp();
                         const fat2 = self.nextTemp();
@@ -3852,7 +3859,7 @@ pub const LLVMCodegen = struct {
                             return fat_name;
                         }
                         const box_ptr = self.nextTemp();
-                        try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 32)\n", .{box_ptr});
+                        try writer.print("  %t.{d} = call ptr @mantiq_alloc_box32()\n", .{box_ptr});
                         try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ val_t, val, box_ptr });
                         const fat_temp1 = self.nextTemp();
                         try writer.print("  %t.{d} = insertvalue {{ i8, ptr }} undef, i8 1, 0\n", .{fat_temp1});
@@ -3878,7 +3885,7 @@ pub const LLVMCodegen = struct {
                             return fat_name;
                         }
                         const box_ptr = self.nextTemp();
-                        try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 32)\n", .{box_ptr});
+                        try writer.print("  %t.{d} = call ptr @mantiq_alloc_box32()\n", .{box_ptr});
                         try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ val_t, val, box_ptr });
                         const fat_temp1 = self.nextTemp();
                         try writer.print("  %t.{d} = insertvalue {{ i8, ptr, ptr }} undef, i8 0, 0\n", .{fat_temp1});
@@ -3906,7 +3913,7 @@ pub const LLVMCodegen = struct {
                             return fat_name;
                         }
                         const box_ptr = self.nextTemp();
-                        try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 32)\n", .{box_ptr});
+                        try writer.print("  %t.{d} = call ptr @mantiq_alloc_box32()\n", .{box_ptr});
                         try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ val_t, val, box_ptr });
                         const fat_temp1 = self.nextTemp();
                         try writer.print("  %t.{d} = insertvalue {{ i8, ptr, ptr }} undef, i8 1, 0\n", .{fat_temp1});
@@ -4320,13 +4327,22 @@ pub const LLVMCodegen = struct {
                         const ret_sig = abi.getRetABI(actual_ret_type, layout.Target.x86_64_linux);
                         const final_ret_t = if (ret_sig.mode == .Coerce) ret_sig.llvm_type else ret_t;
 
+                        var vararg_proto: []const u8 = "";
+                        if (std.mem.eql(u8, func_name, "printf")) {
+                            vararg_proto = " (ptr, ...)";
+                        } else if (std.mem.eql(u8, func_name, "sprintf") or std.mem.eql(u8, func_name, "fprintf")) {
+                            vararg_proto = " (ptr, ptr, ...)";
+                        } else if (std.mem.eql(u8, func_name, "snprintf")) {
+                            vararg_proto = " (ptr, i64, ptr, ...)";
+                        }
+
                         if (std.mem.eql(u8, final_ret_t, "void")) {
-                            try writer.print("  call {s} @{s}({s})\n", .{ final_ret_t, func_name, arg_str.items });
+                            try writer.print("  call {s}{s} @{s}({s})\n", .{ final_ret_t, vararg_proto, func_name, arg_str.items });
                             return "null";
                         } else {
                             const call_temp = self.nextTemp();
                             const call_temp_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{call_temp});
-                            try writer.print("  {s} = call {s} @{s}({s})\n", .{ call_temp_name, final_ret_t, func_name, arg_str.items });
+                            try writer.print("  {s} = call {s}{s} @{s}({s})\n", .{ call_temp_name, final_ret_t, vararg_proto, func_name, arg_str.items });
                             
                             if (ret_sig.mode == .Coerce) {
                                 const ret_align = layout.getAlign(actual_ret_type, layout.Target.x86_64_linux);

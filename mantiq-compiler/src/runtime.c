@@ -215,6 +215,35 @@ void* mantiq_malloc_raw(int64_t size) {
     return ptr;
 }
 
+// ── 32-Byte Slab Bump Allocator ───────────────────────────────────────
+#define MANTIQ_BOX32_SLAB_SIZE 65536
+static uint8_t* _mantiq_box32_slab = NULL;
+static size_t _mantiq_box32_offset = MANTIQ_BOX32_SLAB_SIZE;
+
+void* mantiq_alloc_box32(void) {
+    if (_mantiq_box32_offset + 32 > MANTIQ_BOX32_SLAB_SIZE) {
+        _mantiq_box32_slab = (uint8_t*)sys_malloc(MANTIQ_BOX32_SLAB_SIZE);
+        if (!_mantiq_box32_slab) {
+            fprintf(stderr, "[Runtime] Fatal: 32-byte slab allocation failed\n");
+            abort();
+        }
+        _mantiq_box32_offset = 0;
+    }
+    void* ptr = _mantiq_box32_slab + _mantiq_box32_offset;
+    _mantiq_box32_offset += 32;
+    _alloc_count++;
+    _alloc_bytes += 32;
+    return ptr;
+}
+
+int64_t mantiq_get_alloc_count(void) {
+    return (int64_t)_alloc_count;
+}
+
+int64_t mantiq_get_alloc_bytes(void) {
+    return (int64_t)_alloc_bytes;
+}
+
 void mantiq_free(void* ptr) {
     _free_count++;
     sys_free(ptr);
@@ -271,9 +300,14 @@ typedef struct {
 
 void __mantiq_dict_set(MantiqDict* d, void* key, void* val, uint32_t hash);
 
-MantiqDict* __mantiq_dict_create(int32_t key_size, int32_t val_size, int32_t is_string_key) {
+MantiqDict* __mantiq_dict_create_with_capacity(int32_t key_size, int32_t val_size, int32_t is_string_key, int32_t initial_capacity) {
     MantiqDict* d = mantiq_malloc(sizeof(MantiqDict));
-    d->capacity = 8;
+    int32_t cap = initial_capacity < 8 ? 8 : initial_capacity;
+    int32_t p = 1;
+    while (p < cap && p < 1073741824) {
+        p <<= 1;
+    }
+    d->capacity = p;
     d->count = 0;
     d->key_size = key_size;
     d->val_size = val_size;
@@ -284,6 +318,10 @@ MantiqDict* __mantiq_dict_create(int32_t key_size, int32_t val_size, int32_t is_
     d->occupied = mantiq_malloc(d->capacity);
     memset(d->occupied, 0, d->capacity);
     return d;
+}
+
+MantiqDict* __mantiq_dict_create(int32_t key_size, int32_t val_size, int32_t is_string_key) {
+    return __mantiq_dict_create_with_capacity(key_size, val_size, is_string_key, 8);
 }
 
 void __mantiq_dict_resize(MantiqDict* d) {
