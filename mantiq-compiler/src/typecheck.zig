@@ -2717,6 +2717,20 @@ pub const TypeChecker = struct {
                             return error.TypeMismatch;
                         }
                         node.inferred_type = .{ .kind = .Boolean };
+                    } else if (std.mem.eql(u8, m.method_name, "get")) {
+                        if (m.arguments.len < 1 or m.arguments.len > 2) {
+                            std.debug.print("Type Error: Dict.get expects 1 or 2 arguments, got {d}\n", .{m.arguments.len});
+                            return error.TypeMismatch;
+                        }
+                        try self.checkNode(m.arguments[0]);
+                        if (m.arguments.len == 2) {
+                            try self.checkNode(m.arguments[1]);
+                        }
+                        var val_t = types.Type{ .kind = .Any };
+                        if (rec_type.tuple_types) |tt| {
+                            if (tt.len == 2) val_t = tt[1];
+                        }
+                        node.inferred_type = val_t;
                     } else if (std.mem.eql(u8, m.method_name, "remove")) {
                         if (m.arguments.len != 1) {
                             std.debug.print("Type Error: Dict.remove expects 1 argument, got {d}\n", .{m.arguments.len});

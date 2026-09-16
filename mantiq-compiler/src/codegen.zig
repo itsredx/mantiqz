@@ -5521,8 +5521,74 @@ pub const LLVMCodegen = struct {
                         const has_bool_i8 = self.nextTemp();
                         try writer.print("  %t.{d} = zext i1 %t.{d} to i8\n", .{ has_bool_i8, has_bool });
                         
-                        
                         return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{has_bool_i8});
+                    } else if (std.mem.eql(u8, m.method_name, "get")) {
+                        const rec_val = try self.genExpr(m.receiver);
+                        var key_val = try self.genExpr(m.arguments[0]);
+                        var k_type = types.Type{ .kind = .Any };
+                        var v_type = types.Type{ .kind = .Any };
+                        if (obj_inferred.tuple_types) |tt| {
+                            if (tt.len == 2) {
+                                k_type = tt[0];
+                                v_type = tt[1];
+                            }
+                        }
+                        const key_inferred = m.arguments[0].inferred_type orelse types.Type{ .kind = .Any };
+                        const key_source_t = typeToLLVM(self.allocator, key_inferred);
+                        const k_llvm = typeToLLVM(self.allocator, k_type);
+                        const v_llvm = typeToLLVM(self.allocator, v_type);
+                        key_val = try self.coerceType(key_val, key_source_t, k_llvm);
+
+                        const ptr_temp = self.nextTemp();
+                        try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ ptr_temp, rec_val });
+
+                        const k_size_ptr = self.nextTemp();
+                        const k_size_int = self.nextTemp();
+                        try writer.print("  %t.{d} = getelementptr {s}, ptr null, i32 1\n", .{ k_size_ptr, k_llvm });
+                        try writer.print("  %t.{d} = ptrtoint ptr %t.{d} to i32\n", .{ k_size_int, k_size_ptr });
+
+                        const hash_temp = self.nextTemp();
+                        const k_alloc = self.nextTemp();
+                        try writer.print("  %t.{d} = alloca {s}\n", .{ k_alloc, k_llvm });
+                        try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ k_llvm, key_val, k_alloc });
+
+                        if (isStringLikeType(k_type)) {
+                            const str_ptr = self.nextTemp();
+                            try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ str_ptr, k_llvm, key_val });
+                            const str_len = self.nextTemp();
+                            try writer.print("  %t.{d} = extractvalue {s} {s}, 1\n", .{ str_len, k_llvm, key_val });
+                            try writer.print("  %t.{d} = call i32 @__mantiq_hash_string(ptr %t.{d}, i64 %t.{d})\n", .{ hash_temp, str_ptr, str_len });
+                        } else {
+                            const byte_len = self.nextTemp();
+                            try writer.print("  %t.{d} = zext i32 %t.{d} to i64\n", .{ byte_len, k_size_int });
+                            try writer.print("  %t.{d} = call i32 @__mantiq_hash_bytes(ptr %t.{d}, i64 %t.{d})\n", .{ hash_temp, k_alloc, byte_len });
+                        }
+
+                        const def_alloc = self.nextTemp();
+                        try writer.print("  %t.{d} = alloca {s}\n", .{ def_alloc, v_llvm });
+                        if (m.arguments.len >= 2) {
+                            var def_val = try self.genExpr(m.arguments[1]);
+                            const def_inferred = m.arguments[1].inferred_type orelse types.Type{ .kind = .Any };
+                            const def_source_t = typeToLLVM(self.allocator, def_inferred);
+                            def_val = try self.coerceType(def_val, def_source_t, v_llvm);
+                            try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ v_llvm, def_val, def_alloc });
+                        } else {
+                            try writer.print("  store {s} zeroinitializer, ptr %t.{d}\n", .{ v_llvm, def_alloc });
+                        }
+
+                        const res_ptr = self.nextTemp();
+                        try writer.print("  %t.{d} = call ptr @__mantiq_dict_get(ptr %t.{d}, ptr %t.{d}, i32 %t.{d})\n", .{ res_ptr, ptr_temp, k_alloc, hash_temp });
+
+                        const has_bool = self.nextTemp();
+                        try writer.print("  %t.{d} = icmp ne ptr %t.{d}, null\n", .{ has_bool, res_ptr });
+
+                        const target_ptr = self.nextTemp();
+                        try writer.print("  %t.{d} = select i1 %t.{d}, ptr %t.{d}, ptr %t.{d}\n", .{ target_ptr, has_bool, res_ptr, def_alloc });
+
+                        const final_val = self.nextTemp();
+                        try writer.print("  %t.{d} = load {s}, ptr %t.{d}\n", .{ final_val, v_llvm, target_ptr });
+
+                        return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{final_val});
                     } else if (std.mem.eql(u8, m.method_name, "remove")) {
                         const rec_val = try self.genExpr(m.receiver);
                         var key_val = try self.genExpr(m.arguments[0]);

@@ -200,6 +200,21 @@ void* mantiq_malloc(int64_t size) {
     return ptr;
 }
 
+void* mantiq_malloc_raw(int64_t size) {
+    if (size < 0 || size > 500000000LL) {
+        fprintf(stderr, "[Runtime] Invalid malloc size: %lld\n", (long long)size);
+        abort();
+    }
+    void* ptr = sys_malloc((size_t)(size ? size : 1));
+    if (!ptr) {
+        fprintf(stderr, "[Runtime] Fatal: memory allocation of %lld bytes failed\n", (long long)size);
+        abort();
+    }
+    _alloc_count++;
+    _alloc_bytes += (long long)(size ? size : 1);
+    return ptr;
+}
+
 void mantiq_free(void* ptr) {
     _free_count++;
     sys_free(ptr);
@@ -263,9 +278,9 @@ MantiqDict* __mantiq_dict_create(int32_t key_size, int32_t val_size, int32_t is_
     d->key_size = key_size;
     d->val_size = val_size;
     d->is_string_key = is_string_key;
-    d->keys = mantiq_malloc(d->capacity * key_size);
-    d->values = mantiq_malloc(d->capacity * val_size);
-    d->hashes = mantiq_malloc(d->capacity * sizeof(uint32_t));
+    d->keys = mantiq_malloc_raw(d->capacity * key_size);
+    d->values = mantiq_malloc_raw(d->capacity * val_size);
+    d->hashes = mantiq_malloc_raw(d->capacity * sizeof(uint32_t));
     d->occupied = mantiq_malloc(d->capacity);
     memset(d->occupied, 0, d->capacity);
     return d;
@@ -279,9 +294,9 @@ void __mantiq_dict_resize(MantiqDict* d) {
     uint8_t* old_occ = d->occupied;
 
     d->capacity = old_cap * 2;
-    d->keys = mantiq_malloc(d->capacity * d->key_size);
-    d->values = mantiq_malloc(d->capacity * d->val_size);
-    d->hashes = mantiq_malloc(d->capacity * sizeof(uint32_t));
+    d->keys = mantiq_malloc_raw(d->capacity * d->key_size);
+    d->values = mantiq_malloc_raw(d->capacity * d->val_size);
+    d->hashes = mantiq_malloc_raw(d->capacity * sizeof(uint32_t));
     d->occupied = mantiq_malloc(d->capacity);
     memset(d->occupied, 0, d->capacity);
     d->count = 0;
@@ -764,7 +779,7 @@ char mantiq_fs_exists(const char* path, long long path_len) {
 // F-String / Interpolation Utilities
 void* mantiq_concat_str(const void* a_ptr, long long a_len, const void* b_ptr, long long b_len) {
     long long total = a_len + b_len;
-    char* new_ptr = (char*)mantiq_malloc(total + 1);
+    char* new_ptr = (char*)mantiq_malloc_raw(total + 1);
     if (a_len > 0 && a_ptr) memcpy(new_ptr, a_ptr, a_len);
     if (b_len > 0 && b_ptr) memcpy(new_ptr + a_len, b_ptr, b_len);
     new_ptr[total] = '\0';
@@ -774,7 +789,7 @@ void* mantiq_concat_str(const void* a_ptr, long long a_len, const void* b_ptr, l
 void* mantiq_i32_to_str(int val, long long* out_len) {
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%d", val);
-    char* new_ptr = (char*)mantiq_malloc(len + 1);
+    char* new_ptr = (char*)mantiq_malloc_raw(len + 1);
     memcpy(new_ptr, buf, len + 1);
     if (out_len) *out_len = len;
     return new_ptr;
@@ -783,7 +798,7 @@ void* mantiq_i32_to_str(int val, long long* out_len) {
 void* mantiq_float_to_str(float val, long long* out_len) {
     char buf[64];
     int len = snprintf(buf, sizeof(buf), "%f", val);
-    char* new_ptr = (char*)mantiq_malloc(len + 1);
+    char* new_ptr = (char*)mantiq_malloc_raw(len + 1);
     memcpy(new_ptr, buf, len + 1);
     if (out_len) *out_len = len;
     return new_ptr;
@@ -792,7 +807,7 @@ void* mantiq_float_to_str(float val, long long* out_len) {
 void* mantiq_i64_to_str(long long val, long long* out_len) {
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%lld", val);
-    char* new_ptr = (char*)mantiq_malloc(len + 1);
+    char* new_ptr = (char*)mantiq_malloc_raw(len + 1);
     memcpy(new_ptr, buf, len + 1);
     if (out_len) *out_len = len;
     return new_ptr;
@@ -801,7 +816,7 @@ void* mantiq_i64_to_str(long long val, long long* out_len) {
 void* mantiq_u64_to_str(unsigned long long val, long long* out_len) {
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%llu", val);
-    char* new_ptr = (char*)mantiq_malloc(len + 1);
+    char* new_ptr = (char*)mantiq_malloc_raw(len + 1);
     memcpy(new_ptr, buf, len + 1);
     if (out_len) *out_len = len;
     return new_ptr;
@@ -810,14 +825,14 @@ void* mantiq_u64_to_str(unsigned long long val, long long* out_len) {
 void* mantiq_f64_to_str(double val, long long* out_len) {
     char buf[64];
     int len = snprintf(buf, sizeof(buf), "%f", val);
-    char* new_ptr = (char*)mantiq_malloc(len + 1);
+    char* new_ptr = (char*)mantiq_malloc_raw(len + 1);
     memcpy(new_ptr, buf, len + 1);
     if (out_len) *out_len = len;
     return new_ptr;
 }
 
 void* mantiq_char_to_str(char val, long long* out_len) {
-    char* new_ptr = (char*)mantiq_malloc(2);
+    char* new_ptr = (char*)mantiq_malloc_raw(2);
     new_ptr[0] = val;
     new_ptr[1] = '\0';
     if (out_len) *out_len = 1;
@@ -827,7 +842,7 @@ void* mantiq_char_to_str(char val, long long* out_len) {
 void* mantiq_bool_to_str(int val, long long* out_len) {
     const char* str = val ? "True" : "False";
     long long len = val ? 4 : 5;
-    char* new_ptr = (char*)mantiq_malloc(len + 1);
+    char* new_ptr = (char*)mantiq_malloc_raw(len + 1);
     memcpy(new_ptr, str, len + 1);
     if (out_len) *out_len = len;
     return new_ptr;
