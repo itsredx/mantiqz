@@ -414,6 +414,11 @@ pub const LLVMCodegen = struct {
         try preamble.writer().print("declare void @__mantiq_parallel_for(i32, i32, ptr, ptr)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_malloc(i64)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_alloc_box32()\n", .{});
+        try preamble.writer().print("declare ptr @mantiq_arena_create(i64)\n", .{});
+        try preamble.writer().print("declare ptr @mantiq_arena_alloc(ptr, i64)\n", .{});
+        try preamble.writer().print("declare void @mantiq_arena_reset(ptr)\n", .{});
+        try preamble.writer().print("declare void @mantiq_arena_destroy(ptr)\n", .{});
+        try preamble.writer().print("declare i32 @mantiq_run_command_direct(ptr)\n", .{});
         try preamble.writer().print("declare void @mantiq_free(ptr)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_realloc(ptr, i64)\n", .{});
         try preamble.writer().print("declare void @mantiq_panic(ptr)\n", .{});
