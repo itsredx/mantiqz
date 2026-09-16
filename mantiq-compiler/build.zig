@@ -81,8 +81,45 @@ pub fn build(b: *std.Build) void {
     const ts_dir_opt = b.option([]const u8, "tree-sitter-dir", "Path to tree-sitter C library source (contains include/ and src/)");
     const ts_dir = ts_dir_opt orelse blk: {
         var env_map = std.process.getEnvMap(b.allocator) catch @panic("Env OOM");
+        if (env_map.get("TREE_SITTER_DIR")) |env_dir| {
+            if (env_dir.len > 0) break :blk env_dir;
+        }
+        if (env_map.get("TREE_SITTER_SRC")) |env_src| {
+            if (env_src.len > 0) break :blk env_src;
+        }
         const home_dir = env_map.get("HOME") orelse env_map.get("USERPROFILE") orelse "";
-        break :blk std.fmt.allocPrint(b.allocator, "{s}/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.7", .{home_dir}) catch @panic("OOM");
+        if (home_dir.len > 0) {
+            const default_path = std.fmt.allocPrint(b.allocator, "{s}/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.7", .{home_dir}) catch @panic("OOM");
+            if (std.fs.cwd().access(default_path, .{})) |_| {
+                break :blk default_path;
+            } else |_| {}
+
+            // Dynamic search across any ~/.cargo/registry/src/index.crates.io-*/tree-sitter-*
+            const reg_src_path = std.fmt.allocPrint(b.allocator, "{s}/.cargo/registry/src", .{home_dir}) catch @panic("OOM");
+            if (std.fs.cwd().openDir(reg_src_path, .{ .iterate = true })) |dir| {
+                var reg_dir = dir;
+                defer reg_dir.close();
+                var reg_it = reg_dir.iterate();
+                while (reg_it.next() catch null) |entry| {
+                    if (entry.kind == .directory) {
+                        const index_path = std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ reg_src_path, entry.name }) catch continue;
+                        if (std.fs.cwd().openDir(index_path, .{ .iterate = true })) |i_dir| {
+                            var idx_dir = i_dir;
+                            defer idx_dir.close();
+                            var idx_it = idx_dir.iterate();
+                            while (idx_it.next() catch null) |crate_entry| {
+                                if (crate_entry.kind == .directory and std.mem.startsWith(u8, crate_entry.name, "tree-sitter-") and !std.mem.startsWith(u8, crate_entry.name, "tree-sitter-mantiq")) {
+                                    break :blk std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ index_path, crate_entry.name }) catch continue;
+                                }
+                            }
+                        } else |_| {}
+                    }
+                }
+            } else |_| {}
+
+            break :blk default_path;
+        }
+        break :blk "/usr/include";
     };
 
     ExeConfig.configure(b, exe, ts_dir);
