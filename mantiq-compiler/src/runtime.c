@@ -471,8 +471,98 @@ void mantiq_intern_destroy(void) {
     memset(g_intern_table, 0, sizeof(g_intern_table));
 }
 
+// ── Codegen Arena ─────────────────────────────────────────────────────────────
+static MantiqArena* g_codegen_arena = NULL;
+
+void* mantiq_codegen_alloc(size_t size) {
+    if (!g_codegen_arena) {
+        g_codegen_arena = mantiq_arena_create(262144); // 256 KB chunk size
+    }
+    void* ptr = mantiq_arena_alloc(g_codegen_arena, size);
+    if (!ptr) {
+        fprintf(stderr, "[Runtime] Fatal: out of memory in mantiq_codegen_alloc\n");
+        abort();
+    }
+    return ptr;
+}
+
+void mantiq_codegen_arena_reset(void) {
+    if (g_codegen_arena) {
+        mantiq_arena_reset(g_codegen_arena);
+    }
+}
+
+void mantiq_codegen_arena_destroy(void) {
+    if (g_codegen_arena) {
+        mantiq_arena_destroy(g_codegen_arena);
+        g_codegen_arena = NULL;
+    }
+}
+
+char* mantiq_codegen_temp(int32_t counter) {
+    char* buf = (char*)mantiq_codegen_alloc(24);
+    buf[0] = '%';
+    buf[1] = 't';
+    buf[2] = '.';
+    if (counter == 0) {
+        buf[3] = '0';
+        buf[4] = '\0';
+        return buf;
+    }
+    char tmp[16];
+    int i = 0;
+    int32_t n = counter;
+    if (n < 0) n = -n;
+    while (n > 0) {
+        tmp[i++] = (char)('0' + (n % 10));
+        n /= 10;
+    }
+    int j = 3;
+    while (i > 0) {
+        buf[j++] = tmp[--i];
+    }
+    buf[j] = '\0';
+    return buf;
+}
+
+char* mantiq_codegen_label(int32_t counter) {
+    char* buf = (char*)mantiq_codegen_alloc(24);
+    buf[0] = 'l';
+    buf[1] = 'a';
+    buf[2] = 'b';
+    buf[3] = 'e';
+    buf[4] = 'l';
+    buf[5] = '_';
+    if (counter == 0) {
+        buf[6] = '0';
+        buf[7] = '\0';
+        return buf;
+    }
+    char tmp[16];
+    int i = 0;
+    int32_t n = counter;
+    if (n < 0) n = -n;
+    while (n > 0) {
+        tmp[i++] = (char)('0' + (n % 10));
+        n /= 10;
+    }
+    int j = 6;
+    while (i > 0) {
+        buf[j++] = tmp[--i];
+    }
+    buf[j] = '\0';
+    return buf;
+}
+
 int mantiq_is_arena_ptr(void* ptr) {
     if (!ptr) return 0;
+    if (g_codegen_arena) {
+        MantiqArenaChunk* c = g_codegen_arena->first;
+        while (c) {
+            if ((char*)ptr >= c->data && (char*)ptr < c->data + c->capacity) return 1;
+            c = c->next;
+        }
+    }
     if (g_ast_arena) {
         MantiqArenaChunk* c = g_ast_arena->first;
         while (c) {
@@ -888,6 +978,52 @@ void* __mantiq_dict_get(MantiqDict* d, void* key, uint32_t hash) {
         }
         idx = (idx + 1) & mask;
     }
+    return NULL;
+}
+
+// ── Scope Lookup ─────────────────────────────────────────────────────────────
+typedef struct {
+    void* parent;
+    struct {
+        MantiqDict* dict;
+        size_t len;
+        size_t cap;
+    } symbols;
+    void* closure_node;
+} MantiqScope;
+
+void* __mantiq_scope_lookup(void* current_scope, void* global_scope, const char* name_ptr, size_t name_len) {
+    if (!current_scope || !name_ptr || name_len == 0) return NULL;
+    uint32_t hash = __mantiq_hash_string(name_ptr, (int64_t)name_len);
+    struct MantiqStr { const char* ptr; size_t len; } key = { name_ptr, name_len };
+
+    MantiqScope* curr = (MantiqScope*)current_scope;
+    int visited_global = 0;
+    while (curr) {
+        if (curr == (MantiqScope*)global_scope) {
+            visited_global = 1;
+        }
+        MantiqDict* d = curr->symbols.dict;
+        if (d && d->count > 0) {
+            void* val = __mantiq_dict_get(d, &key, hash);
+            if (val) {
+                return *(void**)val;
+            }
+        }
+        curr = (MantiqScope*)curr->parent;
+    }
+
+    if (!visited_global && global_scope) {
+        MantiqScope* g = (MantiqScope*)global_scope;
+        MantiqDict* d = g->symbols.dict;
+        if (d && d->count > 0) {
+            void* val = __mantiq_dict_get(d, &key, hash);
+            if (val) {
+                return *(void**)val;
+            }
+        }
+    }
+
     return NULL;
 }
 

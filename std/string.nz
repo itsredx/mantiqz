@@ -373,6 +373,13 @@ struct StringBuilder:
     fn make_builder() as StringBuilder:
         return StringBuilder()
 
+    fn make_with_capacity(initial_cap as usize) as StringBuilder:
+        var sb as StringBuilder = StringBuilder()
+        if initial_cap > 16 to usize:
+            sb.buffer = resize(sb.buffer to ptr, initial_cap) to ptr[u8]
+            sb.capacity = initial_cap
+        return sb
+
     fn deinit(self as ptr[StringBuilder]):
         self.__del__()
 
@@ -389,26 +396,50 @@ struct StringBuilder:
         self.append_builder(s)
 
     // -----------------------------------------------------------------
-    // StringBuilder.append_builder(self, s)
+    // StringBuilder.append_slice(self, data, add_len)
     //
-    // Append a null-terminated C string `s` to the internal buffer.
-    //
-    // Growth policy: when the buffer is too small for the concatenated
-    // result, it is resized to (new_len + 1) * 2 (i.e. double the
-    // required capacity).
-    //
-    // The buffer remains null-terminated after every call.
+    // Append a byte slice of known length without calling strlen().
     // -----------------------------------------------------------------
-    fn append_builder(self as ptr[StringBuilder], s as cstr):
-        let add_len as usize = strlen(s)
+    fn append_slice(self as ptr[StringBuilder], data as ptr[u8], add_len as usize):
+        if add_len == 0 to usize or data == None to ptr[u8]:
+            return
         let new_len as usize = (deref self).len + add_len
         if new_len >= (deref self).capacity:
-            let new_cap as usize = (new_len + 1) * 2
+            var new_cap as usize = (deref self).capacity * 2 to usize
+            if new_cap <= new_len:
+                new_cap = (new_len + 1 to usize) * 2 to usize
             (deref self).buffer = resize((deref self).buffer to ptr, new_cap) to ptr[u8]
             (deref self).capacity = new_cap
         let dest_ptr as ptr[u8] = ref (deref self).buffer[(deref self).len]
-        memcpy(dest_ptr to ptr, s to ptr, add_len + 1)
+        memcpy(dest_ptr to ptr, data to ptr, add_len)
         (deref self).len = new_len
+        (deref self).buffer[new_len] = 0 to u8
+
+    // -----------------------------------------------------------------
+    // StringBuilder.append_char(self, c)
+    //
+    // Append a single byte to the builder.
+    // -----------------------------------------------------------------
+    fn append_char(self as ptr[StringBuilder], c as u8):
+        let new_len as usize = (deref self).len + 1 to usize
+        if new_len >= (deref self).capacity:
+            let new_cap as usize = (deref self).capacity * 2 to usize
+            (deref self).buffer = resize((deref self).buffer to ptr, new_cap) to ptr[u8]
+            (deref self).capacity = new_cap
+        (deref self).buffer[(deref self).len] = c
+        (deref self).buffer[new_len] = 0 to u8
+        (deref self).len = new_len
+
+    // -----------------------------------------------------------------
+    // StringBuilder.append_builder(self, s)
+    //
+    // Append a null-terminated C string `s` to the internal buffer.
+    // -----------------------------------------------------------------
+    fn append_builder(self as ptr[StringBuilder], s as cstr):
+        if s == None to cstr:
+            return
+        let add_len as usize = strlen(s)
+        self.append_slice(s to ptr[u8], add_len)
 
     // -----------------------------------------------------------------
     // StringBuilder.to_string(self)
