@@ -650,6 +650,66 @@ void mantiq_temp_tracker_clear(void) {
     g_stmt_temps.count = 0;
 }
 
+// ── Drop Registry ─────────────────────────────────────────────────────────────
+typedef struct {
+    char** names;
+    size_t count;
+    size_t capacity;
+} MantiqDropRegistry;
+
+static MantiqDropRegistry g_drop_registry = {NULL, 0, 0};
+
+int mantiq_type_needs_drop(const char* type_name) {
+    if (!type_name || type_name[0] == '\0') return 0;
+    if (strcmp(type_name, "String") == 0 ||
+        strcmp(type_name, "StringBuilder") == 0 ||
+        strcmp(type_name, "List") == 0 ||
+        strcmp(type_name, "Dict") == 0 ||
+        strcmp(type_name, "Set") == 0) {
+        return 1;
+    }
+    for (size_t i = 0; i < g_drop_registry.count; i++) {
+        if (g_drop_registry.names[i] && strcmp(g_drop_registry.names[i], type_name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void mantiq_type_set_needs_drop(const char* type_name, int needs_drop) {
+    if (!type_name || type_name[0] == '\0') return;
+    int already = mantiq_type_needs_drop(type_name);
+    if (needs_drop) {
+        if (already) return;
+        if (g_drop_registry.count >= g_drop_registry.capacity) {
+            size_t new_cap = g_drop_registry.capacity == 0 ? 16 : g_drop_registry.capacity * 2;
+            char** new_names = (char**)realloc(g_drop_registry.names, new_cap * sizeof(char*));
+            if (!new_names) {
+                fprintf(stderr, "[Runtime] Fatal: out of memory in mantiq_type_set_needs_drop\n");
+                abort();
+            }
+            g_drop_registry.names = new_names;
+            g_drop_registry.capacity = new_cap;
+        }
+        size_t len = strlen(type_name);
+        char* copy = (char*)mantiq_codegen_alloc(len + 1);
+        memcpy(copy, type_name, len + 1);
+        g_drop_registry.names[g_drop_registry.count++] = copy;
+    } else {
+        for (size_t i = 0; i < g_drop_registry.count; i++) {
+            if (g_drop_registry.names[i] && strcmp(g_drop_registry.names[i], type_name) == 0) {
+                g_drop_registry.names[i] = g_drop_registry.names[g_drop_registry.count - 1];
+                g_drop_registry.count--;
+                break;
+            }
+        }
+    }
+}
+
+void mantiq_drop_registry_clear(void) {
+    g_drop_registry.count = 0;
+}
+
 int mantiq_is_arena_ptr(void* ptr) {
     if (!ptr) return 0;
     if (g_codegen_arena) {
@@ -1256,6 +1316,107 @@ void __mantiq_list_extend(void* list_addr, void* src_list_addr, int64_t elem_siz
     for (size_t i = 0; i < src->len; i++) {
         __mantiq_list_append(dest, src->data + i * elem_size, elem_size);
     }
+}
+
+// ── Recursive Drop Glue Primitives ───────────────────────────────────────────
+void __mantiq_dict_destroy(MantiqDict* d) {
+    if (!d) return;
+    if (d->keys) {
+        mantiq_free(d->keys);
+        d->keys = NULL;
+    }
+    if (d->values) {
+        mantiq_free(d->values);
+        d->values = NULL;
+    }
+    if (d->hashes) {
+        mantiq_free(d->hashes);
+        d->hashes = NULL;
+    }
+    if (d->occupied) {
+        mantiq_free(d->occupied);
+        d->occupied = NULL;
+    }
+    d->count = 0;
+    d->capacity = 0;
+    mantiq_free(d);
+}
+
+void __nizam_drop_String(void* s_ptr) {
+    if (!s_ptr) return;
+    struct {
+        void* data;
+        size_t len;
+        size_t cap;
+    }* s = (void*)s_ptr;
+    if (s->data) {
+        mantiq_free(s->data);
+        s->data = NULL;
+    }
+    s->len = 0;
+    s->cap = 0;
+}
+
+void __nizam_drop_StringBuilder(void* sb_ptr) {
+    if (!sb_ptr) return;
+    struct {
+        void* buffer;
+        size_t len;
+        size_t capacity;
+    }* sb = (void*)sb_ptr;
+    if (sb->buffer) {
+        mantiq_free(sb->buffer);
+        sb->buffer = NULL;
+    }
+    sb->len = 0;
+    sb->capacity = 0;
+}
+
+void __nizam_drop_Dict(void* d_slot) {
+    if (!d_slot) return;
+    MantiqDict** d_ptr = (MantiqDict**)d_slot;
+    MantiqDict* d = *d_ptr;
+    if (d) {
+        __mantiq_dict_destroy(d);
+        *d_ptr = NULL;
+    }
+}
+
+void __nizam_drop_List_flat(void* list_addr) {
+    if (!list_addr) return;
+    struct {
+        void* data;
+        size_t len;
+        size_t cap;
+    }* l = (void*)list_addr;
+    if (l->data) {
+        mantiq_free(l->data);
+        l->data = NULL;
+    }
+    l->len = 0;
+    l->cap = 0;
+}
+
+typedef void (*MantiqDropFn)(void* elem_ptr);
+
+void __nizam_drop_List(void* list_addr, int64_t elem_size, MantiqDropFn elem_drop_fn) {
+    if (!list_addr) return;
+    struct {
+        void* data;
+        size_t len;
+        size_t cap;
+    }* l = (void*)list_addr;
+    if (l->data) {
+        if (elem_drop_fn && elem_size > 0) {
+            for (size_t i = 0; i < l->len; i++) {
+                elem_drop_fn((char*)l->data + i * elem_size);
+            }
+        }
+        mantiq_free(l->data);
+        l->data = NULL;
+    }
+    l->len = 0;
+    l->cap = 0;
 }
 
 // Print builtins
