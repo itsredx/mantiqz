@@ -180,6 +180,15 @@ void quantum_measure(int target) {
 static long long _alloc_count = 0;
 static long long _alloc_bytes = 0;
 static long long _free_count = 0;
+static int _mantiq_profile_active = 0;
+
+void mantiq_set_profile_active(int active) {
+    _mantiq_profile_active = active;
+}
+
+int mantiq_is_profile_active(void) {
+    return _mantiq_profile_active;
+}
 
 long long mantiq_alloc_count(void) { return _alloc_count; }
 long long mantiq_alloc_bytes(void) { return _alloc_bytes; }
@@ -196,8 +205,10 @@ void* mantiq_malloc(int64_t size) {
         fprintf(stderr, "[Runtime] Fatal: memory allocation of %lld bytes failed\n", (long long)size);
         abort();
     }
-    _alloc_count++;
-    _alloc_bytes += (long long)(size ? size : 1);
+    if (__builtin_expect(_mantiq_profile_active, 0)) {
+        _alloc_count++;
+        _alloc_bytes += (long long)(size ? size : 1);
+    }
     return ptr;
 }
 
@@ -211,8 +222,10 @@ void* mantiq_malloc_raw(int64_t size) {
         fprintf(stderr, "[Runtime] Fatal: memory allocation of %lld bytes failed\n", (long long)size);
         abort();
     }
-    _alloc_count++;
-    _alloc_bytes += (long long)(size ? size : 1);
+    if (__builtin_expect(_mantiq_profile_active, 0)) {
+        _alloc_count++;
+        _alloc_bytes += (long long)(size ? size : 1);
+    }
     return ptr;
 }
 
@@ -232,8 +245,10 @@ void* mantiq_alloc_box32(void) {
     }
     void* ptr = _mantiq_box32_slab + _mantiq_box32_offset;
     _mantiq_box32_offset += 32;
-    _alloc_count++;
-    _alloc_bytes += 32;
+    if (__builtin_expect(_mantiq_profile_active, 0)) {
+        _alloc_count++;
+        _alloc_bytes += 32;
+    }
     return ptr;
 }
 
@@ -246,7 +261,9 @@ int64_t mantiq_get_alloc_bytes(void) {
 }
 
 void mantiq_free(void* ptr) {
-    _free_count++;
+    if (__builtin_expect(_mantiq_profile_active, 0)) {
+        _free_count++;
+    }
     sys_free(ptr);
 }
 
@@ -302,6 +319,10 @@ MantiqArena* mantiq_arena_create(size_t chunk_size) {
 void* mantiq_arena_alloc(MantiqArena* a, size_t size) {
     if (!a) return mantiq_malloc(size);
     size_t aligned_size = (size + 7) & ~((size_t)7);
+    if (__builtin_expect(_mantiq_profile_active, 0)) {
+        _alloc_count++;
+        _alloc_bytes += aligned_size;
+    }
     MantiqArenaChunk* c = a->current;
     if (c && c->used + aligned_size <= c->capacity) {
         void* ptr = c->data + c->used;
@@ -620,9 +641,17 @@ int __mantiq_streq(const char* s1, int64_t l1, const char* s2, int64_t l2) {
 
 uint32_t __mantiq_hash_bytes(const uint8_t* data, int64_t len) {
     uint32_t hash = 2166136261u;
-    for (int64_t i = 0; i < len; i++) {
-        hash ^= data[i];
-        hash *= 16777619u;
+    int64_t i = 0;
+    while (i + 4 <= len) {
+        hash = (hash ^ data[i]) * 16777619u;
+        hash = (hash ^ data[i + 1]) * 16777619u;
+        hash = (hash ^ data[i + 2]) * 16777619u;
+        hash = (hash ^ data[i + 3]) * 16777619u;
+        i += 4;
+    }
+    while (i < len) {
+        hash = (hash ^ data[i]) * 16777619u;
+        i++;
     }
     return hash;
 }

@@ -442,6 +442,8 @@ pub const LLVMCodegen = struct {
         try self.external_decls.put("mantiq_run_command_direct", true);
         try preamble.writer().print("declare void @mantiq_free(ptr)\n", .{});
         try self.external_decls.put("mantiq_free", true);
+        try preamble.writer().print("declare void @mantiq_set_profile_active(i32)\n", .{});
+        try self.external_decls.put("mantiq_set_profile_active", true);
         try preamble.writer().print("declare ptr @mantiq_realloc(ptr, i64)\n", .{});
         try self.external_decls.put("mantiq_realloc", true);
         try preamble.writer().print("declare void @mantiq_panic(ptr)\n", .{});
