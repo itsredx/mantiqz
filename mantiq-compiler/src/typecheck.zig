@@ -687,7 +687,7 @@ pub const TypeChecker = struct {
                         sym.kind == .Function and sym.decl_node != null and sym.decl_node.?.node_type == .FunDecl
                     else
                         false;
-                    if (std.mem.eql(u8, func_name, "make")) {
+                    if (std.mem.eql(u8, func_name, "make") or std.mem.eql(u8, func_name, "make_ast")) {
                         if (c.generic_args) |gens| {
                             if (gens.len == 1) {
                                 const base_type = try self.allocator.create(types.Type);

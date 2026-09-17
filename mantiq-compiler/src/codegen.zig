@@ -416,6 +416,20 @@ pub const LLVMCodegen = struct {
         try self.external_decls.put("mantiq_malloc", true);
         try preamble.writer().print("declare ptr @mantiq_alloc_box32()\n", .{});
         try self.external_decls.put("mantiq_alloc_box32", true);
+        try preamble.writer().print("declare ptr @mantiq_ast_alloc(i64)\n", .{});
+        try self.external_decls.put("mantiq_ast_alloc", true);
+        try preamble.writer().print("declare void @mantiq_ast_arena_reset()\n", .{});
+        try self.external_decls.put("mantiq_ast_arena_reset", true);
+        try preamble.writer().print("declare void @mantiq_ast_arena_destroy()\n", .{});
+        try self.external_decls.put("mantiq_ast_arena_destroy", true);
+        try preamble.writer().print("declare void @mantiq_sha256_hex(ptr, i64, ptr)\n", .{});
+        try self.external_decls.put("mantiq_sha256_hex", true);
+        try preamble.writer().print("declare i32 @mantiq_sha256_file_hex(ptr, ptr)\n", .{});
+        try self.external_decls.put("mantiq_sha256_file_hex", true);
+        try preamble.writer().print("declare i32 @mantiq_mkdir_p(ptr)\n", .{});
+        try self.external_decls.put("mantiq_mkdir_p", true);
+        try preamble.writer().print("declare i32 @mantiq_copy_file(ptr, ptr)\n", .{});
+        try self.external_decls.put("mantiq_copy_file", true);
         try preamble.writer().print("declare ptr @mantiq_arena_create(i64)\n", .{});
         try self.external_decls.put("mantiq_arena_create", true);
         try preamble.writer().print("declare ptr @mantiq_arena_alloc(ptr, i64)\n", .{});
@@ -3665,7 +3679,8 @@ pub const LLVMCodegen = struct {
                     } else if (std.mem.eql(u8, func_name, "CNOT") and !is_user_func) {
                         try writer.print("  call void @quantum_CNOT(i32 {s}, i32 {s})\n", .{ try self.genExpr(c.arguments[0]), try self.genExpr(c.arguments[1]) });
                         return "null";
-                    } else if (std.mem.eql(u8, func_name, "make")) {
+                    } else if (std.mem.eql(u8, func_name, "make") or std.mem.eql(u8, func_name, "make_ast")) {
+                        const is_ast = std.mem.eql(u8, func_name, "make_ast");
                         var base_size: usize = 1;
                         if (node.inferred_type) |inf_type| {
                             if (inf_type.kind == .RawPointer and inf_type.payload != null) {
@@ -3699,7 +3714,8 @@ pub const LLVMCodegen = struct {
                         try writer.print("  %t.{d} = mul i64 {s}, {d}\n", .{ total_size, i64_cap_val, base_size });
                         
                         const alloc_ptr = self.nextTemp();
-                        try writer.print("  %t.{d} = call ptr @mantiq_malloc(i64 %t.{d})\n", .{ alloc_ptr, total_size });
+                        const alloc_fn = if (is_ast) "@mantiq_ast_alloc" else "@mantiq_malloc";
+                        try writer.print("  %t.{d} = call ptr {s}(i64 %t.{d})\n", .{ alloc_ptr, alloc_fn, total_size });
                         
                         const ptr_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{alloc_ptr});
                         try self.registerTemp(ptr_name, ptr_name);

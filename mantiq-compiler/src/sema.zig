@@ -187,7 +187,7 @@ pub const SemanticAnalyzer = struct {
         const global_scope = try symbols.Scope.create(allocator, null);
         
         // Register built-ins
-        const builtins = [_][]const u8{ "make", "drop", "range", "print", "Some", "Empty", "None", "Ok", "Err" };
+        const builtins = [_][]const u8{ "make", "make_ast", "drop", "range", "print", "Some", "Empty", "None", "Ok", "Err" };
         for (builtins) |b| {
             const sym = try allocator.create(symbols.Symbol);
             sym.* = .{ .name = b, .kind = .Function, .decl_node = null };
@@ -314,7 +314,7 @@ pub const SemanticAnalyzer = struct {
 
                     } else if (std.mem.eql(u8, i.target, "std.mem")) {
                         // Inject memory builtins into scope
-                        const builtins = [_][]const u8{ "make", "drop", "resize" };
+                        const builtins = [_][]const u8{ "make", "make_ast", "drop", "resize" };
                         for (builtins) |b| {
                             if (!isSymbolImported(i.imported_symbols, b)) continue;
                             const sym = try self.allocator.create(symbols.Symbol);

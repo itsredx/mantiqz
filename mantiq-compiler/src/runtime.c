@@ -354,6 +354,264 @@ void mantiq_arena_destroy(MantiqArena* a) {
     mantiq_free(a);
 }
 
+// ── AST & Symbol Bump Arena ───────────────────────────────────────────
+static MantiqArena* g_ast_arena = NULL;
+
+void* mantiq_ast_alloc(size_t size) {
+    if (!g_ast_arena) {
+        g_ast_arena = mantiq_arena_create(262144); // 256 KB chunk size
+    }
+    void* ptr = mantiq_arena_alloc(g_ast_arena, size);
+    if (ptr) {
+        memset(ptr, 0, size);
+    }
+    return ptr;
+}
+
+void mantiq_ast_arena_reset(void) {
+    if (g_ast_arena) {
+        mantiq_arena_reset(g_ast_arena);
+    }
+}
+
+void mantiq_ast_arena_destroy(void) {
+    if (g_ast_arena) {
+        mantiq_arena_destroy(g_ast_arena);
+        g_ast_arena = NULL;
+    }
+}
+
+// ── Standalone SHA-256 Engine ─────────────────────────────────────────
+typedef struct {
+    uint32_t state[8];
+    uint64_t count;
+    uint8_t buffer[64];
+} MantiqSha256;
+
+static const uint32_t K256[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
+
+#define MANTIQ_ROR32(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+#define MANTIQ_CH(x, y, z) (((x) & (y)) ^ (~(x) & (z)))
+#define MANTIQ_MAJ(x, y, z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
+#define MANTIQ_EP0(x) (MANTIQ_ROR32(x, 2) ^ MANTIQ_ROR32(x, 13) ^ MANTIQ_ROR32(x, 22))
+#define MANTIQ_EP1(x) (MANTIQ_ROR32(x, 6) ^ MANTIQ_ROR32(x, 11) ^ MANTIQ_ROR32(x, 25))
+#define MANTIQ_SIG0(x) (MANTIQ_ROR32(x, 7) ^ MANTIQ_ROR32(x, 18) ^ ((x) >> 3))
+#define MANTIQ_SIG1(x) (MANTIQ_ROR32(x, 17) ^ MANTIQ_ROR32(x, 19) ^ ((x) >> 10))
+
+static void mantiq_sha256_transform(MantiqSha256* ctx, const uint8_t data[64]) {
+    uint32_t a = ctx->state[0], b = ctx->state[1], c = ctx->state[2], d = ctx->state[3];
+    uint32_t e = ctx->state[4], f = ctx->state[5], g = ctx->state[6], h = ctx->state[7];
+    uint32_t w[64];
+    for (int i = 0; i < 16; i++) {
+        w[i] = ((uint32_t)data[i * 4] << 24) |
+               ((uint32_t)data[i * 4 + 1] << 16) |
+               ((uint32_t)data[i * 4 + 2] << 8) |
+               ((uint32_t)data[i * 4 + 3]);
+    }
+    for (int i = 16; i < 64; i++) {
+        w[i] = MANTIQ_SIG1(w[i - 2]) + w[i - 7] + MANTIQ_SIG0(w[i - 15]) + w[i - 16];
+    }
+    for (int i = 0; i < 64; i++) {
+        uint32_t t1 = h + MANTIQ_EP1(e) + MANTIQ_CH(e, f, g) + K256[i] + w[i];
+        uint32_t t2 = MANTIQ_EP0(a) + MANTIQ_MAJ(a, b, c);
+        h = g;
+        g = f;
+        f = e;
+        e = d + t1;
+        d = c;
+        c = b;
+        b = a;
+        a = t1 + t2;
+    }
+    ctx->state[0] += a;
+    ctx->state[1] += b;
+    ctx->state[2] += c;
+    ctx->state[3] += d;
+    ctx->state[4] += e;
+    ctx->state[5] += f;
+    ctx->state[6] += g;
+    ctx->state[7] += h;
+}
+
+static void mantiq_sha256_init(MantiqSha256* ctx) {
+    ctx->state[0] = 0x6a09e667;
+    ctx->state[1] = 0xbb67ae85;
+    ctx->state[2] = 0x3c6ef372;
+    ctx->state[3] = 0xa54ff53a;
+    ctx->state[4] = 0x510e527f;
+    ctx->state[5] = 0x9b05688c;
+    ctx->state[6] = 0x1f83d9ab;
+    ctx->state[7] = 0x5be0cd19;
+    ctx->count = 0;
+}
+
+static void mantiq_sha256_update(MantiqSha256* ctx, const uint8_t* data, size_t len) {
+    size_t buffer_used = (size_t)(ctx->count & 63);
+    ctx->count += len;
+    if (buffer_used > 0) {
+        size_t to_fill = 64 - buffer_used;
+        if (len < to_fill) {
+            memcpy(ctx->buffer + buffer_used, data, len);
+            return;
+        }
+        memcpy(ctx->buffer + buffer_used, data, to_fill);
+        mantiq_sha256_transform(ctx, ctx->buffer);
+        data += to_fill;
+        len -= to_fill;
+    }
+    while (len >= 64) {
+        mantiq_sha256_transform(ctx, data);
+        data += 64;
+        len -= 64;
+    }
+    if (len > 0) {
+        memcpy(ctx->buffer, data, len);
+    }
+}
+
+static void mantiq_sha256_final(MantiqSha256* ctx, uint8_t digest[32]) {
+    uint8_t pad[64];
+    pad[0] = 0x80;
+    size_t buffer_used = (size_t)(ctx->count & 63);
+    size_t pad_len = (buffer_used < 56) ? (56 - buffer_used) : (120 - buffer_used);
+    memset(pad + 1, 0, pad_len - 1);
+    uint64_t total_bits = ctx->count * 8;
+    uint8_t len_bytes[8];
+    for (int i = 0; i < 8; i++) {
+        len_bytes[i] = (uint8_t)(total_bits >> (56 - i * 8));
+    }
+    mantiq_sha256_update(ctx, pad, pad_len);
+    mantiq_sha256_update(ctx, len_bytes, 8);
+    for (int i = 0; i < 8; i++) {
+        digest[i * 4] = (uint8_t)(ctx->state[i] >> 24);
+        digest[i * 4 + 1] = (uint8_t)(ctx->state[i] >> 16);
+        digest[i * 4 + 2] = (uint8_t)(ctx->state[i] >> 8);
+        digest[i * 4 + 3] = (uint8_t)(ctx->state[i]);
+    }
+}
+
+void mantiq_sha256_hex(const char* data, size_t len, char* out_hex_64) {
+    if (!out_hex_64) return;
+    MantiqSha256 ctx;
+    mantiq_sha256_init(&ctx);
+    if (data && len > 0) {
+        mantiq_sha256_update(&ctx, (const uint8_t*)data, len);
+    }
+    uint8_t digest[32];
+    mantiq_sha256_final(&ctx, digest);
+    static const char hex_digits[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out_hex_64[i * 2] = hex_digits[(digest[i] >> 4) & 0x0F];
+        out_hex_64[i * 2 + 1] = hex_digits[digest[i] & 0x0F];
+    }
+    out_hex_64[64] = '\0';
+}
+
+int mantiq_sha256_file_hex(const char* path, char* out_hex_64) {
+    if (!path || !out_hex_64) return 0;
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+    MantiqSha256 ctx;
+    mantiq_sha256_init(&ctx);
+    uint8_t buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        mantiq_sha256_update(&ctx, buf, n);
+    }
+    fclose(f);
+    uint8_t digest[32];
+    mantiq_sha256_final(&ctx, digest);
+    static const char hex_digits[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out_hex_64[i * 2] = hex_digits[(digest[i] >> 4) & 0x0F];
+        out_hex_64[i * 2 + 1] = hex_digits[digest[i] & 0x0F];
+    }
+    out_hex_64[64] = '\0';
+    return 1;
+}
+
+// ── Cache File Utilities ──────────────────────────────────────────────
+#include <errno.h>
+
+int mantiq_mkdir_p(const char* dir_path) {
+    if (!dir_path || !dir_path[0]) return 0;
+    char tmp[4096];
+    size_t len = strlen(dir_path);
+    if (len >= sizeof(tmp)) return 0;
+    memcpy(tmp, dir_path, len + 1);
+    for (size_t i = 1; i < len; i++) {
+        if (tmp[i] == '/') {
+            tmp[i] = '\0';
+            if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+                return 0;
+            }
+            tmp[i] = '/';
+        }
+    }
+    if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+        return 0;
+    }
+    return 1;
+}
+
+int mantiq_copy_file(const char* src_path, const char* dst_path) {
+    if (!src_path || !dst_path) return 0;
+    int src_fd = open(src_path, O_RDONLY);
+    if (src_fd < 0) return 0;
+    struct stat st;
+    if (fstat(src_fd, &st) != 0) {
+        close(src_fd);
+        return 0;
+    }
+    char dst_dir[4096];
+    size_t dlen = strlen(dst_path);
+    if (dlen < sizeof(dst_dir)) {
+        memcpy(dst_dir, dst_path, dlen + 1);
+        char* last_slash = strrchr(dst_dir, '/');
+        if (last_slash) {
+            *last_slash = '\0';
+            mantiq_mkdir_p(dst_dir);
+        }
+    }
+    int dst_fd = open(dst_path, O_WRONLY | O_CREAT | O_TRUNC, (st.st_mode & 07777) ? (st.st_mode & 07777) : 0755);
+    if (dst_fd < 0) {
+        close(src_fd);
+        return 0;
+    }
+    char buf[65536];
+    ssize_t n;
+    int ok = 1;
+    while ((n = read(src_fd, buf, sizeof(buf))) > 0) {
+        ssize_t written = 0;
+        while (written < n) {
+            ssize_t w = write(dst_fd, buf + written, n - written);
+            if (w <= 0) {
+                ok = 0;
+                break;
+            }
+            written += w;
+        }
+        if (!ok) break;
+    }
+    close(src_fd);
+    close(dst_fd);
+#ifndef __wasi__
+    if (ok) {
+        chmod(dst_path, (st.st_mode & 07777) ? (st.st_mode & 07777) : 0755);
+    }
+#endif
+    return ok;
+}
+
 #include <stdint.h>
 int __mantiq_streq(const char* s1, int64_t l1, const char* s2, int64_t l2) {
     if (l1 != l2) return 0;
