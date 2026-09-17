@@ -554,6 +554,102 @@ char* mantiq_codegen_label(int32_t counter) {
     return buf;
 }
 
+// ── Statement Temporary Tracker ───────────────────────────────────────────────
+typedef struct {
+    char** regs;
+    char** types;
+    uint8_t* consumed;
+    size_t count;
+    size_t capacity;
+} StatementTempTracker;
+
+static StatementTempTracker g_stmt_temps = {NULL, NULL, NULL, 0, 0};
+
+void mantiq_temp_tracker_push(const char* ssa_reg, const char* llvm_type) {
+    if (!ssa_reg || ssa_reg[0] == '\0') return;
+    if (g_stmt_temps.count >= g_stmt_temps.capacity) {
+        size_t new_cap = g_stmt_temps.capacity == 0 ? 16 : g_stmt_temps.capacity * 2;
+        char** new_regs = (char**)realloc(g_stmt_temps.regs, new_cap * sizeof(char*));
+        char** new_types = (char**)realloc(g_stmt_temps.types, new_cap * sizeof(char*));
+        uint8_t* new_consumed = (uint8_t*)realloc(g_stmt_temps.consumed, new_cap * sizeof(uint8_t));
+        if (!new_regs || !new_types || !new_consumed) {
+            fprintf(stderr, "[Runtime] Fatal: out of memory in mantiq_temp_tracker_push\n");
+            abort();
+        }
+        g_stmt_temps.regs = new_regs;
+        g_stmt_temps.types = new_types;
+        g_stmt_temps.consumed = new_consumed;
+        g_stmt_temps.capacity = new_cap;
+    }
+    size_t len = strlen(ssa_reg);
+    char* copy = (char*)mantiq_codegen_alloc(len + 1);
+    memcpy(copy, ssa_reg, len + 1);
+    g_stmt_temps.regs[g_stmt_temps.count] = copy;
+
+    const char* t_str = llvm_type ? llvm_type : "ptr";
+    size_t t_len = strlen(t_str);
+    char* t_copy = (char*)mantiq_codegen_alloc(t_len + 1);
+    memcpy(t_copy, t_str, t_len + 1);
+    g_stmt_temps.types[g_stmt_temps.count] = t_copy;
+
+    g_stmt_temps.consumed[g_stmt_temps.count] = 0;
+    g_stmt_temps.count++;
+}
+
+void mantiq_temp_tracker_consume(const char* ssa_reg) {
+    if (!ssa_reg || g_stmt_temps.count == 0) return;
+    for (size_t i = 0; i < g_stmt_temps.count; i++) {
+        if (!g_stmt_temps.consumed[i] && strcmp(g_stmt_temps.regs[i], ssa_reg) == 0) {
+            g_stmt_temps.consumed[i] = 1;
+            break;
+        }
+    }
+}
+
+int64_t mantiq_temp_tracker_count(void) {
+    int64_t unconsumed = 0;
+    for (size_t i = 0; i < g_stmt_temps.count; i++) {
+        if (!g_stmt_temps.consumed[i]) {
+            unconsumed++;
+        }
+    }
+    return unconsumed;
+}
+
+const char* mantiq_temp_tracker_get_unconsumed(int64_t target_idx) {
+    int64_t cur = 0;
+    for (size_t i = 0; i < g_stmt_temps.count; i++) {
+        if (!g_stmt_temps.consumed[i]) {
+            if (cur == target_idx) {
+                return g_stmt_temps.regs[i];
+            }
+            cur++;
+        }
+    }
+    return NULL;
+}
+
+const char* mantiq_temp_tracker_get_unconsumed_reg(int64_t target_idx) {
+    return mantiq_temp_tracker_get_unconsumed(target_idx);
+}
+
+const char* mantiq_temp_tracker_get_unconsumed_type(int64_t target_idx) {
+    int64_t cur = 0;
+    for (size_t i = 0; i < g_stmt_temps.count; i++) {
+        if (!g_stmt_temps.consumed[i]) {
+            if (cur == target_idx) {
+                return g_stmt_temps.types[i];
+            }
+            cur++;
+        }
+    }
+    return "ptr";
+}
+
+void mantiq_temp_tracker_clear(void) {
+    g_stmt_temps.count = 0;
+}
+
 int mantiq_is_arena_ptr(void* ptr) {
     if (!ptr) return 0;
     if (g_codegen_arena) {
