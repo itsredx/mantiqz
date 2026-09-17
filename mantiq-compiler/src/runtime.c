@@ -260,12 +260,17 @@ int64_t mantiq_get_alloc_bytes(void) {
     return (int64_t)_alloc_bytes;
 }
 
+int mantiq_is_arena_ptr(void* ptr);
+
 void mantiq_free(void* ptr) {
+    if (!ptr) return;
+    if (mantiq_is_arena_ptr(ptr)) return;
     if (__builtin_expect(_mantiq_profile_active, 0)) {
         _free_count++;
     }
     sys_free(ptr);
 }
+
 
 void* mantiq_realloc(void* ptr, int64_t new_size) {
     if (new_size < 0 || new_size > 500000000LL) {
@@ -401,6 +406,90 @@ void mantiq_ast_arena_destroy(void) {
         g_ast_arena = NULL;
     }
 }
+
+// ── Global String & Identifier Interning Engine ───────────────────────
+#define MANTIQ_INTERN_BUCKETS 16384
+#define MANTIQ_INTERN_MASK (MANTIQ_INTERN_BUCKETS - 1)
+
+typedef struct MantiqInternEntry {
+    struct MantiqInternEntry* next;
+    uint32_t hash;
+    size_t len;
+    char str[];
+} MantiqInternEntry;
+
+static MantiqArena* g_intern_arena = NULL;
+static MantiqInternEntry* g_intern_table[MANTIQ_INTERN_BUCKETS];
+static const char g_mantiq_empty_str[1] = {0};
+
+uint32_t __mantiq_hash_bytes(const uint8_t* data, int64_t len);
+
+const char* mantiq_intern_string(const char* s, size_t len) {
+    if (!s || len == 0) return g_mantiq_empty_str;
+    if (!g_intern_arena) {
+        g_intern_arena = mantiq_arena_create(65536); // 64 KB chunk size
+    }
+    uint32_t hash = __mantiq_hash_bytes((const uint8_t*)s, (int64_t)len);
+    uint32_t bucket = hash & MANTIQ_INTERN_MASK;
+
+    MantiqInternEntry* entry = g_intern_table[bucket];
+    while (entry) {
+        if (entry->hash == hash && entry->len == len && memcmp(entry->str, s, len) == 0) {
+            return entry->str;
+        }
+        entry = entry->next;
+    }
+
+    size_t entry_size = sizeof(MantiqInternEntry) + len + 1;
+    MantiqInternEntry* new_entry = (MantiqInternEntry*)mantiq_arena_alloc(g_intern_arena, entry_size);
+    if (!new_entry) {
+        fprintf(stderr, "[Runtime] Fatal: out of memory in mantiq_intern_string\n");
+        abort();
+    }
+    new_entry->hash = hash;
+    new_entry->len = len;
+    memcpy(new_entry->str, s, len);
+    new_entry->str[len] = '\0';
+    new_entry->next = g_intern_table[bucket];
+    g_intern_table[bucket] = new_entry;
+
+    return new_entry->str;
+}
+
+void mantiq_intern_reset(void) {
+    if (g_intern_arena) {
+        mantiq_arena_reset(g_intern_arena);
+    }
+    memset(g_intern_table, 0, sizeof(g_intern_table));
+}
+
+void mantiq_intern_destroy(void) {
+    if (g_intern_arena) {
+        mantiq_arena_destroy(g_intern_arena);
+        g_intern_arena = NULL;
+    }
+    memset(g_intern_table, 0, sizeof(g_intern_table));
+}
+
+int mantiq_is_arena_ptr(void* ptr) {
+    if (!ptr) return 0;
+    if (g_ast_arena) {
+        MantiqArenaChunk* c = g_ast_arena->first;
+        while (c) {
+            if ((char*)ptr >= c->data && (char*)ptr < c->data + c->capacity) return 1;
+            c = c->next;
+        }
+    }
+    if (g_intern_arena) {
+        MantiqArenaChunk* c = g_intern_arena->first;
+        while (c) {
+            if ((char*)ptr >= c->data && (char*)ptr < c->data + c->capacity) return 1;
+            c = c->next;
+        }
+    }
+    return 0;
+}
+
 
 // ── Standalone SHA-256 Engine ─────────────────────────────────────────
 typedef struct {

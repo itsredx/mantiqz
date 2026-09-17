@@ -422,6 +422,13 @@ pub const LLVMCodegen = struct {
         try self.external_decls.put("mantiq_ast_arena_reset", true);
         try preamble.writer().print("declare void @mantiq_ast_arena_destroy()\n", .{});
         try self.external_decls.put("mantiq_ast_arena_destroy", true);
+        try preamble.writer().print("declare ptr @mantiq_intern_string(ptr, i64)\n", .{});
+        try self.external_decls.put("mantiq_intern_string", true);
+        try preamble.writer().print("declare void @mantiq_intern_reset()\n", .{});
+        try self.external_decls.put("mantiq_intern_reset", true);
+        try preamble.writer().print("declare void @mantiq_intern_destroy()\n", .{});
+        try self.external_decls.put("mantiq_intern_destroy", true);
+
         try preamble.writer().print("declare void @mantiq_sha256_hex(ptr, i64, ptr)\n", .{});
         try self.external_decls.put("mantiq_sha256_hex", true);
         try preamble.writer().print("declare i32 @mantiq_sha256_file_hex(ptr, ptr)\n", .{});
