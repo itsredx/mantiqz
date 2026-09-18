@@ -1205,6 +1205,12 @@ pub const TypeChecker = struct {
 
                         // Validate parameter types
                         for (c.arguments, 0..) |arg, i| {
+                            if (ft.is_variadic and i >= ft.param_types.len) {
+                                if (ft.param_types.len == 0 or ft.param_types[ft.param_types.len - 1].kind != .List) {
+                                    // C untyped variadic: extra arguments accept any type
+                                    continue;
+                                }
+                            }
                             const param_idx = if (ft.is_variadic and i >= ft.param_types.len - 1) ft.param_types.len - 1 else i;
                             if (param_idx >= ft.param_types.len) break;
                             
@@ -1229,7 +1235,7 @@ pub const TypeChecker = struct {
                             
                             if (expected_type.kind != .Any and expected_type.kind != .Unknown) {
                                 if (actual_arg_type.kind != .Unknown and !types.isImplicitlyConvertible(actual_arg_type, expected_type)) {
-                                    std.debug.print("Type Error: Argument {d} expects type '{s}', but got '{s}'\n", .{ i + 1, types.formatType(expected_type), types.formatType(actual_arg_type) });
+                                    std.debug.print("Type Error: Argument {d} expects type '{s}', but got '{s}' at row {d}, col {d}\n", .{ i + 1, types.formatType(expected_type), types.formatType(actual_arg_type), node.span.start_row, node.span.start_col });
                                     return error.TypeMismatch;
                                 }
                             }

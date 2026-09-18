@@ -4326,7 +4326,7 @@ pub const LLVMCodegen = struct {
                                 if (callee_t.kind == .Function and callee_t.function != null) {
                                     const params = callee_t.function.?.param_types;
                                     const is_var = callee_t.function.?.is_variadic;
-                                    const fixed_count = if (is_var and params.len > 0) params.len - 1 else params.len;
+                                    const fixed_count = if (is_var and !is_extern and params.len > 0) params.len - 1 else params.len;
                                     if (i < fixed_count) {
                                         target_type = params[i];
                                     } else if (is_extern) {

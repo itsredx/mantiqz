@@ -1100,6 +1100,7 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
         var body_stmts = std.ArrayList(*ast.Node).init(self.allocator);
         var return_type: ?ast.TypeAnnotation = null;
         var is_fun_variadic = false;
+        var has_named_variadic_param = false;
         var generic_params_list: ?std.ArrayList([]const u8) = null;
 
         // Scan children of named_function to find parameters and body
@@ -1155,8 +1156,6 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
                             }
                         }
                         const default_node = c.ts_node_child_by_field_name(p_child, "default_value", 13);
-                        ast.debugPrint("DEBUG: param_decl name field exists: {}, type field exists: {}\n", .{!c.ts_node_is_null(id_node), !c.ts_node_is_null(type_node)});
-                        if (!c.ts_node_is_null(id_node)) ast.debugPrint("DEBUG: param name is '{s}'\n", .{self.extractText(id_node)});
                         
                         var is_variadic = false;
                         for (0..c.ts_node_child_count(p_child)) |pd_i| {
@@ -1169,6 +1168,10 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
                         
                         if (is_variadic) {
                             is_fun_variadic = true;
+                            if (c.ts_node_is_null(id_node)) {
+                                continue;
+                            }
+                            has_named_variadic_param = true;
                         }
                         
                         if (!c.ts_node_is_null(id_node)) {
@@ -1177,7 +1180,6 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
                             try param_names.append(p_name);
                             
                             if (!c.ts_node_is_null(type_node)) {
-                                ast.debugPrint("DEBUG: lowerFunDecl type_node type is '{s}'\n", .{std.mem.span(c.ts_node_type(type_node))});
                                 const type_annot = try self.lowerTypeAnnotation(type_node);
                                 try param_types.append(type_annot);
                             } else {
@@ -1237,7 +1239,7 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
             }
         }
 
-        if (is_fun_variadic and param_types.items.len > 0) {
+        if (!is_extern and has_named_variadic_param and param_types.items.len > 0) {
             const last_idx = param_types.items.len - 1;
             if (param_types.items[last_idx]) |base_type| {
                 var list_type = ast.TypeAnnotation{ .name = "List" };
