@@ -701,10 +701,10 @@ module.exports = grammar({
     kw_unsafe: $ => 'unsafe',
 
     string: $ => choice(
-        seq('"""', repeat(choice(/[^"\\]/, /\\./, /"[^"]/, /""[^"]/)), '"""'),
-        seq("'''", repeat(choice(/[^'\\]/, /\\./, /'[^']/, /''[^']/)), "'''"),
-        seq(/([bBrRuU]*)"/, repeat(choice(/[^"\\]/, /\\./)), '"'),
-        seq(/([bBrRuU]*)'/, repeat(choice(/[^'\\]/, /\\./)), "'")
+        token(seq('"""', repeat(choice(/[^"\\]/, /\\./, /"[^"]/, /""[^"]/)), '"""')),
+        token(seq("'''", repeat(choice(/[^'\\]/, /\\./, /'[^']/, /''[^']/)), "'''")),
+        token(seq(/([bBrRuU]*)"/, repeat(choice(/[^"\\]/, /\\./)), '"')),
+        token(seq(/([bBrRuU]*)'/, repeat(choice(/[^'\\]/, /\\./)), "'"))
     ),
 
     interpolated_str: $ => choice(
