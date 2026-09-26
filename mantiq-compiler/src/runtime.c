@@ -665,7 +665,11 @@ int mantiq_type_needs_drop(const char* type_name) {
         strcmp(type_name, "StringBuilder") == 0 ||
         strcmp(type_name, "List") == 0 ||
         strcmp(type_name, "Dict") == 0 ||
-        strcmp(type_name, "Set") == 0) {
+        strcmp(type_name, "Set") == 0 ||
+        strcmp(type_name, "FrozenSet") == 0 ||
+        strcmp(type_name, "Tuple") == 0 ||
+        strcmp(type_name, "Bytes") == 0 ||
+        strcmp(type_name, "ByteArray") == 0) {
         return 1;
     }
     for (size_t i = 0; i < g_drop_registry.count; i++) {
@@ -1285,6 +1289,79 @@ void __mantiq_dict_keys(MantiqDict* d, void* list_addr, int32_t key_size) {
     }
 }
 
+void __mantiq_dict_values(MantiqDict* d, void* list_addr, int32_t val_size) {
+    if (!d || !list_addr) return;
+    for (int32_t i = 0; i < d->capacity; i++) {
+        if (d->occupied[i]) {
+            void* val_ptr = d->values + (i * d->val_size);
+            __mantiq_list_append(list_addr, val_ptr, val_size);
+        }
+    }
+}
+
+void __mantiq_dict_copy(void* dest_addr, void* src_addr) {
+    struct MantiqRawFat {
+        MantiqDict* dict;
+        size_t len;
+        size_t cap;
+    };
+    struct MantiqRawFat* d = (struct MantiqRawFat*)dest_addr;
+    struct MantiqRawFat* s = (struct MantiqRawFat*)src_addr;
+    if (!d) return;
+    d->dict = NULL;
+    d->len = 0;
+    d->cap = 0;
+    if (!s || !s->dict) return;
+    MantiqDict* src_dict = s->dict;
+    MantiqDict* new_dict = __mantiq_dict_create_with_capacity(src_dict->key_size, src_dict->val_size, src_dict->is_string_key, src_dict->capacity);
+    new_dict->count = src_dict->count;
+    memcpy(new_dict->keys, src_dict->keys, (size_t)src_dict->capacity * src_dict->key_size);
+    memcpy(new_dict->values, src_dict->values, (size_t)src_dict->capacity * src_dict->val_size);
+    memcpy(new_dict->hashes, src_dict->hashes, (size_t)src_dict->capacity * sizeof(uint32_t));
+    memcpy(new_dict->occupied, src_dict->occupied, (size_t)src_dict->capacity);
+    d->dict = new_dict;
+    d->len = (size_t)src_dict->count;
+    d->cap = (size_t)src_dict->capacity;
+}
+
+void* __mantiq_dict_setdefault(MantiqDict* d, void* key, void* default_val, uint32_t hash) {
+    if (!d) return NULL;
+    void* existing = __mantiq_dict_get(d, key, hash);
+    if (existing) {
+        return existing;
+    }
+    __mantiq_dict_set(d, key, default_val, hash);
+    return __mantiq_dict_get(d, key, hash);
+}
+
+int8_t __mantiq_dict_pop(MantiqDict* d, void* key, uint32_t hash, void* out_val, int32_t val_size) {
+    if (!d) return 0;
+    void* val = __mantiq_dict_get(d, key, hash);
+    if (!val) return 0;
+    if (out_val) {
+        memcpy(out_val, val, (size_t)val_size);
+    }
+    return __mantiq_dict_remove(d, key, hash);
+}
+
+int8_t __mantiq_dict_popitem(MantiqDict* d, void* out_key, void* out_val, int32_t key_size, int32_t val_size) {
+    if (!d || d->count == 0) return 0;
+    for (int32_t i = 0; i < d->capacity; i++) {
+        if (d->occupied[i]) {
+            if (out_key) {
+                memcpy(out_key, d->keys + i * d->key_size, (size_t)key_size);
+            }
+            if (out_val) {
+                memcpy(out_val, d->values + i * d->val_size, (size_t)val_size);
+            }
+            uint32_t hash = d->hashes[i];
+            void* k = d->keys + i * d->key_size;
+            return __mantiq_dict_remove(d, k, hash);
+        }
+    }
+    return 0;
+}
+
 void __mantiq_dict_clear(MantiqDict* d) {
     if (!d) return;
     d->count = 0;
@@ -1765,6 +1842,97 @@ void* __mantiq_list_to_string(void* list_addr, int64_t elem_size, void* len_out)
             b.data[1] = 0; }
     }
     return b.data;
+}
+
+// ── Bytes and List[u8] Helpers ──────────────────────────────────────────
+void __mantiq_list_hex(void* out_str, void* list_addr) {
+    struct MantiqRawList {
+        uint8_t* data;
+        size_t len;
+        size_t cap;
+    };
+    struct MantiqHeapStr {
+        char* ptr;
+        size_t len;
+        size_t cap;
+    };
+    struct MantiqRawList* l = (struct MantiqRawList*)list_addr;
+    struct MantiqHeapStr* s = (struct MantiqHeapStr*)out_str;
+    if (!l || !l->data || l->len == 0) {
+        char* buf = (char*)mantiq_malloc(1);
+        if (buf) buf[0] = '\0';
+        s->ptr = buf;
+        s->len = 0;
+        s->cap = 1;
+        return;
+    }
+    size_t hex_len = l->len * 2;
+    char* buf = (char*)mantiq_malloc(hex_len + 1);
+    static const char hex_digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < l->len; i++) {
+        uint8_t b = l->data[i];
+        buf[i * 2] = hex_digits[(b >> 4) & 0x0F];
+        buf[i * 2 + 1] = hex_digits[b & 0x0F];
+    }
+    buf[hex_len] = '\0';
+    s->ptr = buf;
+    s->len = hex_len;
+    s->cap = hex_len + 1;
+}
+
+void __mantiq_list_decode(void* out_str, void* list_addr) {
+    struct MantiqRawList {
+        uint8_t* data;
+        size_t len;
+        size_t cap;
+    };
+    struct MantiqHeapStr {
+        char* ptr;
+        size_t len;
+        size_t cap;
+    };
+    struct MantiqRawList* l = (struct MantiqRawList*)list_addr;
+    struct MantiqHeapStr* s = (struct MantiqHeapStr*)out_str;
+    if (!l || !l->data || l->len == 0) {
+        char* buf = (char*)mantiq_malloc(1);
+        if (buf) buf[0] = '\0';
+        s->ptr = buf;
+        s->len = 0;
+        s->cap = 1;
+        return;
+    }
+    char* buf = (char*)mantiq_malloc(l->len + 1);
+    memcpy(buf, l->data, l->len);
+    buf[l->len] = '\0';
+    s->ptr = buf;
+    s->len = l->len;
+    s->cap = l->len + 1;
+}
+
+void __mantiq_list_fromhex(void* out_list, const char* hex_str) {
+    struct MantiqRawList {
+        uint8_t* data;
+        size_t len;
+        size_t cap;
+    };
+    struct MantiqRawList* l = (struct MantiqRawList*)out_list;
+    l->data = NULL;
+    l->len = 0;
+    l->cap = 0;
+    if (!hex_str) return;
+    size_t slen = strlen(hex_str);
+    size_t count = slen / 2;
+    if (count == 0) return;
+    l->data = (uint8_t*)mantiq_malloc(count);
+    l->len = count;
+    l->cap = count;
+    for (size_t i = 0; i < count; i++) {
+        char h1 = hex_str[i * 2];
+        char h2 = hex_str[i * 2 + 1];
+        int v1 = (h1 >= '0' && h1 <= '9') ? (h1 - '0') : ((h1 >= 'a' && h1 <= 'f') ? (h1 - 'a' + 10) : ((h1 >= 'A' && h1 <= 'F') ? (h1 - 'A' + 10) : 0));
+        int v2 = (h2 >= '0' && h2 <= '9') ? (h2 - '0') : ((h2 >= 'a' && h2 <= 'f') ? (h2 - 'a' + 10) : ((h2 >= 'A' && h2 <= 'F') ? (h2 - 'A' + 10) : 0));
+        l->data[i] = (uint8_t)((v1 << 4) | v2);
+    }
 }
 
 // ── Recursive Drop Glue Primitives ───────────────────────────────────────────

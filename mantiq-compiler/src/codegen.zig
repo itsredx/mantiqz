@@ -2207,6 +2207,17 @@ pub const LLVMCodegen = struct {
                         try writer.print("  {s} = getelementptr inbounds %{s}, ptr {s}, i32 0, i32 {d}\n", .{ ptr_name, ct.name, loaded_ptr_name, idx });
                         return ptr_name;
                     }
+                } else if (obj_type.kind == .String or obj_type.kind == .AsciiStr or obj_type.kind == .Utf8Str or obj_type.kind == .WebStr or obj_type.kind == .RangeStr) {
+                    var idx: u32 = 0;
+                    if (std.mem.eql(u8, m.property, "len") or std.mem.eql(u8, m.property, "length")) {
+                        idx = 1;
+                    } else if (std.mem.eql(u8, m.property, "capacity") or std.mem.eql(u8, m.property, "cap")) {
+                        idx = 2;
+                    }
+                    const ptr_temp = self.nextTemp();
+                    const ptr_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ptr_temp});
+                    try writer.print("  {s} = getelementptr {{ ptr, i64, i64 }}, ptr {s}, i32 0, i32 {d}\n", .{ ptr_name, base_ptr, idx });
+                    return ptr_name;
                 }
                 var fallback_s_name: ?[]const u8 = null;
                 var fallback_f_idx: u32 = 0;
@@ -2295,9 +2306,9 @@ pub const LLVMCodegen = struct {
                     try writer.print("  %t.{d} = getelementptr inbounds i8, ptr %t.{d}, i64 {s}\n", .{ elem_ptr, ptr_temp, index_i64 });
                     
                     return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{elem_ptr});
-                } else if (obj_type.kind == .RawPointer) {
+                } else if (obj_type.kind == .RawPointer or obj_type.kind == .CStr) {
                     var inner_type = types.Type{ .kind = .U8 };
-                    if (obj_type.payload) |p| inner_type = p.*;
+                    if (obj_type.kind != .CStr and obj_type.payload != null) inner_type = obj_type.payload.?.*;
                     const inner_llvm = typeToLLVM(self.allocator, inner_type);
                     
                     const elem_ptr = self.nextTemp();
@@ -4447,9 +4458,9 @@ pub const LLVMCodegen = struct {
                     try writer.print("  %t.{d} = load {s}, ptr %t.{d}\n", .{ item_val, inner_llvm, elem_ptr });
                     return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{item_val});
                     
-                } else if (obj_type.kind == .RawPointer) {
+                } else if (obj_type.kind == .RawPointer or obj_type.kind == .CStr) {
                     var inner_type = types.Type{ .kind = .U8 };
-                    if (obj_type.payload) |p| inner_type = p.*;
+                    if (obj_type.kind != .CStr and obj_type.payload != null) inner_type = obj_type.payload.?.*;
                     const inner_llvm = typeToLLVM(self.allocator, inner_type);
                     
                     const index_llvm = typeToLLVM(self.allocator, idx.index.inferred_type orelse types.Type{ .kind = .Any });
@@ -5102,6 +5113,17 @@ pub const LLVMCodegen = struct {
                         try writer.print("  {s} = extractvalue %{s} {s}, {d}\n", .{ temp_name, st.name, obj_val, idx });
                         return temp_name;
                     }
+                } else if (obj_inferred.kind == .String or obj_inferred.kind == .AsciiStr or obj_inferred.kind == .Utf8Str or obj_inferred.kind == .WebStr or obj_inferred.kind == .RangeStr) {
+                    var idx: usize = 0;
+                    if (std.mem.eql(u8, m.property, "len") or std.mem.eql(u8, m.property, "length")) {
+                        idx = 1;
+                    } else if (std.mem.eql(u8, m.property, "capacity") or std.mem.eql(u8, m.property, "cap")) {
+                        idx = 2;
+                    }
+                    const temp = self.nextTemp();
+                    const temp_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{temp});
+                    try writer.print("  {s} = extractvalue {{ ptr, i64, i64 }} {s}, {d}\n", .{ temp_name, obj_val, idx });
+                    return temp_name;
                 } else if (obj_inferred.kind == .Union and obj_inferred.union_type != null) {
                     const ut = obj_inferred.union_type.?;
                     const alloca_temp = self.nextTemp();

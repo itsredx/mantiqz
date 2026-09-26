@@ -107,8 +107,10 @@ pub const TypeChecker = struct {
                 const s_name = decl.data.StructDecl.name;
                 if (std.mem.eql(u8, s_name, "String") or std.mem.eql(u8, s_name, "StringBuilder")) {
                     self.is_string_imported = true;
-                } else if (std.mem.eql(u8, s_name, "List")) {
+                } else if (std.mem.eql(u8, s_name, "List") or std.mem.eql(u8, s_name, "Set") or std.mem.eql(u8, s_name, "FrozenSet") or std.mem.eql(u8, s_name, "Tuple") or std.mem.eql(u8, s_name, "Bytes") or std.mem.eql(u8, s_name, "ByteArray")) {
                     self.is_list_imported = true;
+                    self.is_dict_imported = true;
+                    self.is_string_imported = true;
                 } else if (std.mem.eql(u8, s_name, "Dict")) {
                     self.is_dict_imported = true;
                 } else if (std.mem.eql(u8, s_name, "Option")) {
@@ -2512,6 +2514,14 @@ pub const TypeChecker = struct {
                         std.debug.print("Type Error: Class '{s}' has no field named '{s}'\n", .{ct.name, m.property});
                         return error.TypeMismatch;
                     }
+                } else if (obj_type.kind == .String or obj_type.kind == .AsciiStr or obj_type.kind == .Utf8Str or obj_type.kind == .WebStr or obj_type.kind == .RangeStr) {
+                    if (std.mem.eql(u8, m.property, "len") or std.mem.eql(u8, m.property, "length") or std.mem.eql(u8, m.property, "capacity") or std.mem.eql(u8, m.property, "cap")) {
+                        node.inferred_type = .{ .kind = .I64 };
+                    } else if (std.mem.eql(u8, m.property, "data")) {
+                        node.inferred_type = .{ .kind = .RawPointer, .payload = null };
+                    } else {
+                        node.inferred_type = .{ .kind = .Any };
+                    }
                 } else {
                     node.inferred_type = .{ .kind = .Any };
                 }
@@ -2545,7 +2555,7 @@ pub const TypeChecker = struct {
                                         const actual_arg_type = arg.inferred_type orelse types.Type{ .kind = .Unknown };
                                         if (expected_type.kind != .Any and expected_type.kind != .Unknown) {
                                             if (actual_arg_type.kind != .Unknown and !types.isImplicitlyConvertible(actual_arg_type, expected_type)) {
-                                                std.debug.print("Type Error: Argument {d} expects type '{s}', but got '{s}'\n", .{ i + 1, types.formatType(expected_type), types.formatType(actual_arg_type) });
+                                                std.debug.print("Type Error: Argument {d} to '{s}' expects type '{s}', but got '{s}' at row {d}, col {d}\n", .{ i + 1, m.method_name, types.formatType(expected_type), types.formatType(actual_arg_type), node.span.start_row, node.span.start_col });
                                                 return error.TypeMismatch;
                                             }
                                         }
@@ -2619,7 +2629,7 @@ pub const TypeChecker = struct {
                                     const actual_arg_type = arg.inferred_type orelse types.Type{ .kind = .Unknown };
                                     if (expected_type.kind != .Any and expected_type.kind != .Unknown) {
                                         if (actual_arg_type.kind != .Unknown and !types.isImplicitlyConvertible(actual_arg_type, expected_type)) {
-                                            std.debug.print("Type Error: Argument {d} expects type '{s}', but got '{s}'\n", .{ i + 1, types.formatType(expected_type), types.formatType(actual_arg_type) });
+                                            std.debug.print("Type Error: Argument {d} to '{s}' expects type '{s}', but got '{s}' at row {d}, col {d}\n", .{ i + 1, m.method_name, types.formatType(expected_type), types.formatType(actual_arg_type), node.span.start_row, node.span.start_col });
                                             return error.TypeMismatch;
                                         }
                                     }
@@ -2991,7 +3001,7 @@ pub const TypeChecker = struct {
                     } else {
                         node.inferred_type = types.Type{ .kind = .Any };
                     }
-                } else if (obj_type.kind == .String or obj_type.kind == .AsciiStr or obj_type.kind == .Utf8Str or obj_type.kind == .WebStr or obj_type.kind == .RangeStr) {
+                } else if (obj_type.kind == .String or obj_type.kind == .AsciiStr or obj_type.kind == .Utf8Str or obj_type.kind == .WebStr or obj_type.kind == .RangeStr or obj_type.kind == .CStr) {
                     node.inferred_type = types.Type{ .kind = .I8 };
                 } else if (obj_type.kind == .RawPointer) {
                     if (obj_type.payload) |p| {

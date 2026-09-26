@@ -456,6 +456,13 @@ pub const SemanticAnalyzer = struct {
                         sa.loaded_modules = self.loaded_modules;
                         sa.loaded_asts = self.loaded_asts;
 
+                        // Break circular import cycles by recording module in cache before recursive analyze
+                        try self.loaded_modules.put(i.target, sa.global_scope);
+                        try sa.loaded_modules.put(i.target, sa.global_scope);
+                        try self.loaded_asts.put(i.target, ast_root);
+                        try sa.loaded_asts.put(i.target, ast_root);
+                        target_scope = sa.global_scope;
+
                         if (std.mem.eql(u8, i.target, "std.collections")) {
                             // Inject collections builtins into the module's global scope before analysis
                             // so both the Nizam module code and the importer can access them
@@ -476,6 +483,11 @@ pub const SemanticAnalyzer = struct {
                         target_scope = sa.global_scope;
 
                         var tc = typecheck.TypeChecker.init(self.allocator, module_info.mode);
+                        if (std.mem.eql(u8, i.target, "std.collections")) {
+                            tc.is_list_imported = true;
+                            tc.is_dict_imported = true;
+                            tc.is_string_imported = true;
+                        }
                         try tc.checkProgram(ast_root);
 
                         i.module_ast = ast_root;

@@ -9,6 +9,7 @@
 // data structures such as Vec, Deque, HashMap, BTreeMap, etc.
 // ============================================================================
 
+
 // ============================================================================
 // Set[T]
 //
@@ -127,7 +128,7 @@ struct Set[T]:
     public fn update(self as ptr[Set[T]], other as ptr[Set[T]]):
         let keys as List[T] = other.to_list()
         let count as i64 = keys.length()
-        var i as i64 = 0
+        var i as i64 = 0 to i64
         while i < count:
             self.add(keys[i])
             i = i + 1 to i64
@@ -135,15 +136,1153 @@ struct Set[T]:
     public fn discard(self as ptr[Set[T]], item as T):
         let _ as bool = (deref self)._dict.remove(item)
 
+    public fn copy(self as ptr[Set[T]]) as Set[T]:
+        var s as Set[T] = Set[T]()
+        s._dict = (deref self)._dict.copy()
+        return s
+
+    public fn pop(self as ptr[Set[T]]) as T:
+        let keys as List[T] = (deref self)._dict.keys()
+        let count as i64 = keys.length()
+        if count > 0 to i64:
+            let last as T = keys[count - 1 to i64]
+            let _ as bool = (deref self)._dict.remove(last)
+            return last
+        return keys[0 to i64]
+
+    public fn difference(self as ptr[Set[T]], other as ptr[Set[T]]) as Set[T]:
+        var res as Set[T] = Set[T]()
+        res.init()
+        let keys as List[T] = self.to_list()
+        let count as i64 = keys.length()
+        var i as i64 = 0 to i64
+        while i < count:
+            let item as T = keys[i]
+            if not other.has(item):
+                res.add(item)
+            i = i + 1 to i64
+        return res
+
+    public fn difference_update(self as ptr[Set[T]], other as ptr[Set[T]]):
+        let other_keys as List[T] = other.to_list()
+        let count as i64 = other_keys.length()
+        var i as i64 = 0 to i64
+        while i < count:
+            let _ as bool = self.remove(other_keys[i])
+            i = i + 1 to i64
+
+    public fn intersection(self as ptr[Set[T]], other as ptr[Set[T]]) as Set[T]:
+        var res as Set[T] = Set[T]()
+        res.init()
+        let keys as List[T] = self.to_list()
+        let count as i64 = keys.length()
+        var i as i64 = 0 to i64
+        while i < count:
+            let item as T = keys[i]
+            if other.has(item):
+                res.add(item)
+            i = i + 1 to i64
+        return res
+
+    public fn intersection_update(self as ptr[Set[T]], other as ptr[Set[T]]):
+        let keys as List[T] = self.to_list()
+        let count as i64 = keys.length()
+        var i as i64 = 0 to i64
+        while i < count:
+            let item as T = keys[i]
+            if not other.has(item):
+                let _ as bool = self.remove(item)
+            i = i + 1 to i64
+
+    public fn symmetric_difference(self as ptr[Set[T]], other as ptr[Set[T]]) as Set[T]:
+        var res as Set[T] = Set[T]()
+        res.init()
+        let keys1 as List[T] = self.to_list()
+        let count1 as i64 = keys1.length()
+        var i as i64 = 0 to i64
+        while i < count1:
+            let item1 as T = keys1[i]
+            if not other.has(item1):
+                res.add(item1)
+            i = i + 1 to i64
+        let keys2 as List[T] = other.to_list()
+        let count2 as i64 = keys2.length()
+        var j as i64 = 0 to i64
+        while j < count2:
+            let item2 as T = keys2[j]
+            if not self.has(item2):
+                res.add(item2)
+            j = j + 1 to i64
+        return res
+
+    public fn symmetric_difference_update(self as ptr[Set[T]], other as ptr[Set[T]]):
+        let other_keys as List[T] = other.to_list()
+        let count as i64 = other_keys.length()
+        var i as i64 = 0 to i64
+        while i < count:
+            let item as T = other_keys[i]
+            if self.has(item):
+                let _ as bool = self.remove(item)
+            else:
+                self.add(item)
+            i = i + 1 to i64
+
+    public fn union(self as ptr[Set[T]], other as ptr[Set[T]]) as Set[T]:
+        var res as Set[T] = self.copy()
+        res.update(other)
+        return res
+
+    public fn issubset(self as ptr[Set[T]], other as ptr[Set[T]]) as bool:
+        if self.length() > other.length():
+            return False
+        let keys as List[T] = self.to_list()
+        let count as i64 = keys.length()
+        var i as i64 = 0 to i64
+        while i < count:
+            if not other.has(keys[i]):
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn issuperset(self as ptr[Set[T]], other as ptr[Set[T]]) as bool:
+        return other.issubset(self)
+
+    public fn isdisjoint(self as ptr[Set[T]], other as ptr[Set[T]]) as bool:
+        let keys as List[T] = self.to_list()
+        let count as i64 = keys.length()
+        var i as i64 = 0 to i64
+        while i < count:
+            if other.has(keys[i]):
+                return False
+            i = i + 1 to i64
+        return True
+
 // ============================================================================
-// Future collection plans (not yet implemented):
+// FrozenSet[T]
 //
-//   Vec[T]         – dynamic array / vector
-//   Deque[T]       – double-ended queue
-//   HashMap[K, V]  – open-addressing / Robin Hood hash map
-//   BTreeMap[K, V] – ordered map backed by a B-tree
-//   Stack[T]       – LIFO stack (could be a Vec wrapper)
-//   Queue[T]       – FIFO queue (could be a Deque wrapper)
-//   LinkedList[T]  – doubly-linked list
-//   BinaryHeap[T]  – priority queue
+// An immutable generic set type that maintains a collection of unique items.
+// Implemented around Dict[T, bool], providing all non-mutating set operations.
 // ============================================================================
+struct FrozenSet[T]:
+    public var _dict as Dict[T, bool] = Dict[T, bool]()
+
+    public fn __init__(self as ptr[FrozenSet[T]]):
+        (deref self)._dict = Dict[T, bool]()
+
+    public fn init(self as ptr[FrozenSet[T]]):
+        (deref self)._dict = Dict[T, bool]()
+
+    public fn from_set(s as ptr[Set[T]]) as FrozenSet[T]:
+        var fs as FrozenSet[T] = FrozenSet[T]()
+        fs._dict = (deref s)._dict.copy()
+        return fs
+
+    public fn from_list(items as List[T]) as FrozenSet[T]:
+        var fs as FrozenSet[T] = FrozenSet[T]()
+        fs.init()
+        let count as i64 = items.length()
+        var i as i64 = 0 to i64
+        while i < count:
+            fs._dict[items[i]] = True
+            i = i + 1 to i64
+        return fs
+
+    public fn has(self as ptr[FrozenSet[T]], item as T) as bool:
+        return (deref self)._dict.has(item)
+
+    public fn length(self as ptr[FrozenSet[T]]) as i64:
+        return (deref self)._dict.length()
+
+    public fn count(self as ptr[FrozenSet[T]]) as i64:
+        return (deref self)._dict.length()
+
+    public fn to_list(self as ptr[FrozenSet[T]]) as List[T]:
+        return (deref self)._dict.keys()
+
+    public fn copy(self as ptr[FrozenSet[T]]) as FrozenSet[T]:
+        var fs as FrozenSet[T] = FrozenSet[T]()
+        fs._dict = (deref self)._dict.copy()
+        return fs
+
+    public fn issubset(self as ptr[FrozenSet[T]], other as ptr[FrozenSet[T]]) as bool:
+        if self.length() > other.length():
+            return False
+        let keys as List[T] = self.to_list()
+        let count as i64 = keys.length()
+        var i as i64 = 0 to i64
+        while i < count:
+            if not other.has(keys[i]):
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn issuperset(self as ptr[FrozenSet[T]], other as ptr[FrozenSet[T]]) as bool:
+        return other.issubset(self)
+
+    public fn isdisjoint(self as ptr[FrozenSet[T]], other as ptr[FrozenSet[T]]) as bool:
+        let keys as List[T] = self.to_list()
+        let count as i64 = keys.length()
+        var i as i64 = 0 to i64
+        while i < count:
+            if other.has(keys[i]):
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn union(self as ptr[FrozenSet[T]], other as ptr[FrozenSet[T]]) as FrozenSet[T]:
+        var res as FrozenSet[T] = self.copy()
+        res._dict.update((deref other)._dict)
+        return res
+
+    public fn intersection(self as ptr[FrozenSet[T]], other as ptr[FrozenSet[T]]) as FrozenSet[T]:
+        var res as FrozenSet[T] = FrozenSet[T]()
+        res.init()
+        let keys as List[T] = self.to_list()
+        let count as i64 = keys.length()
+        var i as i64 = 0 to i64
+        while i < count:
+            let item as T = keys[i]
+            if other.has(item):
+                res._dict[item] = True
+            i = i + 1 to i64
+        return res
+
+    public fn difference(self as ptr[FrozenSet[T]], other as ptr[FrozenSet[T]]) as FrozenSet[T]:
+        var res as FrozenSet[T] = FrozenSet[T]()
+        res.init()
+        let keys as List[T] = self.to_list()
+        let count as i64 = keys.length()
+        var i as i64 = 0 to i64
+        while i < count:
+            let item as T = keys[i]
+            if not other.has(item):
+                res._dict[item] = True
+            i = i + 1 to i64
+        return res
+
+    public fn symmetric_difference(self as ptr[FrozenSet[T]], other as ptr[FrozenSet[T]]) as FrozenSet[T]:
+        var res as FrozenSet[T] = FrozenSet[T]()
+        res.init()
+        let keys1 as List[T] = self.to_list()
+        let count1 as i64 = keys1.length()
+        var i as i64 = 0 to i64
+        while i < count1:
+            let item1 as T = keys1[i]
+            if not other.has(item1):
+                res._dict[item1] = True
+            i = i + 1 to i64
+        let keys2 as List[T] = other.to_list()
+        let count2 as i64 = keys2.length()
+        var j as i64 = 0 to i64
+        while j < count2:
+            let item2 as T = keys2[j]
+            if not self.has(item2):
+                res._dict[item2] = True
+            j = j + 1 to i64
+        return res
+
+// ── Tuple ─────────────────────────────────────────────────────────────
+// An immutable ordered sequence of elements of type T, providing full
+// parity with Python's tuple data model (Section 3).
+struct Tuple[T]:
+    public var _items as List[T] = List[T]()
+
+    public fn __init__(self as ptr[Tuple[T]]):
+        (deref self)._items = List[T]()
+
+    public fn init(self as ptr[Tuple[T]]):
+        (deref self)._items = List[T]()
+
+    public fn from_list(self as ptr[Tuple[T]], items as List[T]):
+        (deref self)._items = List[T]()
+        let n as i64 = items.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            (deref self)._items.append(items[i])
+            i = i + 1 to i64
+
+    public fn length(self as ptr[Tuple[T]]) as i64:
+        return (deref self)._items.length()
+
+    public fn count(self as ptr[Tuple[T]], item as T) as i64:
+        var c as i64 = 0 to i64
+        let n as i64 = (deref self)._items.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            if (deref self)._items[i] == item:
+                c = c + 1 to i64
+            i = i + 1 to i64
+        return c
+
+    public fn index(self as ptr[Tuple[T]], item as T) as i64:
+        let n as i64 = (deref self)._items.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            if (deref self)._items[i] == item:
+                return i
+            i = i + 1 to i64
+        return -1 to i64
+
+    public fn get(self as ptr[Tuple[T]], idx as i64) as T:
+        return (deref self)._items[idx]
+
+    public fn __getitem__(self as Tuple[T], idx as i64) -> T:
+        return self._items[idx]
+
+    public fn contains(self as ptr[Tuple[T]], item as T) as bool:
+        return self.index(item) >= 0 to i64
+
+    public fn to_list(self as ptr[Tuple[T]]) as List[T]:
+        var res as List[T] = List[T]()
+        let n as i64 = (deref self)._items.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            res.append((deref self)._items[i])
+            i = i + 1 to i64
+        return res
+
+// ── Fixed-Arity Heterogeneous Tuples ──────────────────────────────────
+struct Tuple2[A, B]:
+    public var v0 as A
+    public var v1 as B
+
+    public fn make(v0 as A, v1 as B) as Tuple2[A, B]:
+        return Tuple2[A, B](v0 = v0, v1 = v1)
+
+    public fn length(self as ptr[Tuple2[A, B]]) as i64:
+        return 2 to i64
+
+    public fn get0(self as ptr[Tuple2[A, B]]) as A:
+        return (deref self).v0
+
+    public fn get1(self as ptr[Tuple2[A, B]]) as B:
+        return (deref self).v1
+
+struct Tuple3[A, B, C]:
+    public var v0 as A
+    public var v1 as B
+    public var v2 as C
+
+    public fn make(v0 as A, v1 as B, v2 as C) as Tuple3[A, B, C]:
+        return Tuple3[A, B, C](v0 = v0, v1 = v1, v2 = v2)
+
+    public fn length(self as ptr[Tuple3[A, B, C]]) as i64:
+        return 3 to i64
+
+    public fn get0(self as ptr[Tuple3[A, B, C]]) as A:
+        return (deref self).v0
+
+    public fn get1(self as ptr[Tuple3[A, B, C]]) as B:
+        return (deref self).v1
+
+    public fn get2(self as ptr[Tuple3[A, B, C]]) as C:
+        return (deref self).v2
+
+struct Tuple4[A, B, C, D]:
+    public var v0 as A
+    public var v1 as B
+    public var v2 as C
+    public var v3 as D
+
+    public fn make(v0 as A, v1 as B, v2 as C, v3 as D) as Tuple4[A, B, C, D]:
+        return Tuple4[A, B, C, D](v0 = v0, v1 = v1, v2 = v2, v3 = v3)
+
+    public fn length(self as ptr[Tuple4[A, B, C, D]]) as i64:
+        return 4 to i64
+
+    public fn get0(self as ptr[Tuple4[A, B, C, D]]) as A:
+        return (deref self).v0
+
+    public fn get1(self as ptr[Tuple4[A, B, C, D]]) as B:
+        return (deref self).v1
+
+    public fn get2(self as ptr[Tuple4[A, B, C, D]]) as C:
+        return (deref self).v2
+
+    public fn get3(self as ptr[Tuple4[A, B, C, D]]) as D:
+        return (deref self).v3
+
+// ── Bytes ─────────────────────────────────────────────────────────────
+// Immutable sequence of bytes, providing full parity with Python's bytes
+// data model (Section 11).
+extern fn __mantiq_list_fromhex(out_list as ptr, hex_str as cstr)
+extern fn __mantiq_list_hex(out_str as ptr, list_addr as ptr)
+extern fn __mantiq_list_decode(out_str as ptr, list_addr as ptr)
+extern fn __mantiq_list_insert(list_addr as ptr, index as i64, elem_addr as ptr, elem_size as i64)
+extern fn __mantiq_list_remove(list_addr as ptr, elem_addr as ptr, elem_size as i64) as i8
+extern fn __mantiq_list_pop(list_addr as ptr, out_addr as ptr, elem_size as i64) as i8
+extern fn __mantiq_list_pop_index(list_addr as ptr, index as i64, out_addr as ptr, elem_size as i64) as i8
+
+struct Bytes:
+    public var _bytes as List[u8] = List[u8]()
+
+    public fn __init__(self as ptr[Bytes]):
+        (deref self)._bytes = List[u8]()
+
+    public fn init(self as ptr[Bytes]):
+        (deref self)._bytes = List[u8]()
+
+    public fn from_list(l as List[u8]) as Bytes:
+        var b as Bytes = Bytes()
+        let n as i64 = l.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            b._bytes.append(l[i])
+            i = i + 1 to i64
+        return b
+
+    public fn from_str(s as String) as Bytes:
+        var b as Bytes = Bytes()
+        let n as i64 = s.len to i64
+        var i as i64 = 0 to i64
+        while i < n:
+            b._bytes.append(s.data[i])
+            i = i + 1 to i64
+        return b
+
+    public fn from_cstr(cs as cstr) as Bytes:
+        var b as Bytes = Bytes()
+        if cs != None to cstr:
+            extern fn strlen(s as cstr) as usize
+            let n as i64 = strlen(cs) to i64
+            var i as i64 = 0 to i64
+            while i < n:
+                b._bytes.append(cs[i])
+                i = i + 1 to i64
+        return b
+
+    public fn fromhex(hex_str as cstr) as Bytes:
+        var b as Bytes = Bytes()
+        __mantiq_list_fromhex((ref b._bytes) to ptr, hex_str)
+        return b
+
+    public fn length(self as ptr[Bytes]) as i64:
+        return (deref self)._bytes.length()
+
+    public fn get(self as ptr[Bytes], idx as i64) as u8:
+        return (deref self)._bytes[idx]
+
+    public fn __getitem__(self as Bytes, idx as i64) -> u8:
+        return self._bytes[idx]
+
+    public fn count(self as ptr[Bytes], byte_val as u8) as i64:
+        var c as i64 = 0 to i64
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            if (deref self)._bytes[i] == byte_val:
+                c = c + 1 to i64
+            i = i + 1 to i64
+        return c
+
+    public fn find(self as ptr[Bytes], byte_val as u8) as i64:
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            if (deref self)._bytes[i] == byte_val:
+                return i
+            i = i + 1 to i64
+        return -1 to i64
+
+    public fn index(self as ptr[Bytes], byte_val as u8) as i64:
+        return self.find(byte_val)
+
+    public fn rfind(self as ptr[Bytes], byte_val as u8) as i64:
+        let n as i64 = self.length()
+        var i as i64 = n - 1 to i64
+        while i >= 0 to i64:
+            if (deref self)._bytes[i] == byte_val:
+                return i
+            i = i - 1 to i64
+        return -1 to i64
+
+    public fn rindex(self as ptr[Bytes], byte_val as u8) as i64:
+        return self.rfind(byte_val)
+
+    public fn contains(self as ptr[Bytes], byte_val as u8) as bool:
+        return self.find(byte_val) >= 0 to i64
+
+    public fn startswith(self as ptr[Bytes], prefix as ptr[Bytes]) as bool:
+        let plen as i64 = prefix.length()
+        if plen > self.length():
+            return False
+        var i as i64 = 0 to i64
+        while i < plen:
+            if (deref self)._bytes[i] != prefix.get(i):
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn endswith(self as ptr[Bytes], suffix as ptr[Bytes]) as bool:
+        let slen as i64 = suffix.length()
+        let tlen as i64 = self.length()
+        if slen > tlen:
+            return False
+        let offset as i64 = tlen - slen
+        var i as i64 = 0 to i64
+        while i < slen:
+            if (deref self)._bytes[offset + i] != suffix.get(i):
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn removeprefix(self as ptr[Bytes], prefix as ptr[Bytes]) as Bytes:
+        if self.startswith(prefix):
+            var res as Bytes = Bytes()
+            let plen as i64 = prefix.length()
+            let n as i64 = self.length()
+            var i as i64 = plen
+            while i < n:
+                res._bytes.append((deref self)._bytes[i])
+                i = i + 1 to i64
+            return res
+        return Bytes.from_list((deref self)._bytes)
+
+    public fn removesuffix(self as ptr[Bytes], suffix as ptr[Bytes]) as Bytes:
+        if self.endswith(suffix):
+            var res as Bytes = Bytes()
+            let slen as i64 = suffix.length()
+            let stop as i64 = self.length() - slen
+            var i as i64 = 0 to i64
+            while i < stop:
+                res._bytes.append((deref self)._bytes[i])
+                i = i + 1 to i64
+            return res
+        return Bytes.from_list((deref self)._bytes)
+
+    public fn decode(self as ptr[Bytes]) as String:
+        var s as String = ""
+        __mantiq_list_decode((ref s) to ptr, (ref (deref self)._bytes) to ptr)
+        return s
+
+    public fn hex(self as ptr[Bytes]) as String:
+        var s as String = ""
+        __mantiq_list_hex((ref s) to ptr, (ref (deref self)._bytes) to ptr)
+        return s
+
+    public fn to_list(self as ptr[Bytes]) as List[u8]:
+        var res as List[u8] = List[u8]()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            res.append((deref self)._bytes[i])
+            i = i + 1 to i64
+        return res
+
+    public fn to_str(self as ptr[Bytes]) as String:
+        return self.decode()
+
+    public fn lower(self as ptr[Bytes]) as Bytes:
+        var res as Bytes = Bytes()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b >= 65 to u8 and b <= 90 to u8:
+                res._bytes.append(b + 32 to u8)
+            else:
+                res._bytes.append(b)
+            i = i + 1 to i64
+        return res
+
+    public fn upper(self as ptr[Bytes]) as Bytes:
+        var res as Bytes = Bytes()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b >= 97 to u8 and b <= 122 to u8:
+                res._bytes.append(b - 32 to u8)
+            else:
+                res._bytes.append(b)
+            i = i + 1 to i64
+        return res
+
+    public fn swapcase(self as ptr[Bytes]) as Bytes:
+        var res as Bytes = Bytes()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b >= 65 to u8 and b <= 90 to u8:
+                res._bytes.append(b + 32 to u8)
+            elif b >= 97 to u8 and b <= 122 to u8:
+                res._bytes.append(b - 32 to u8)
+            else:
+                res._bytes.append(b)
+            i = i + 1 to i64
+        return res
+
+    public fn capitalize(self as ptr[Bytes]) as Bytes:
+        var res as Bytes = Bytes()
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return res
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if i == 0 to i64:
+                if b >= 97 to u8 and b <= 122 to u8:
+                    res._bytes.append(b - 32 to u8)
+                else:
+                    res._bytes.append(b)
+            else:
+                if b >= 65 to u8 and b <= 90 to u8:
+                    res._bytes.append(b + 32 to u8)
+                else:
+                    res._bytes.append(b)
+            i = i + 1 to i64
+        return res
+
+    public fn title(self as ptr[Bytes]) as Bytes:
+        var res as Bytes = Bytes()
+        let n as i64 = self.length()
+        var in_word as bool = False
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            let is_alpha as bool = (b >= 65 to u8 and b <= 90 to u8) or (b >= 97 to u8 and b <= 122 to u8)
+            if is_alpha:
+                if not in_word:
+                    if b >= 97 to u8 and b <= 122 to u8:
+                        res._bytes.append(b - 32 to u8)
+                    else:
+                        res._bytes.append(b)
+                    in_word = True
+                else:
+                    if b >= 65 to u8 and b <= 90 to u8:
+                        res._bytes.append(b + 32 to u8)
+                    else:
+                        res._bytes.append(b)
+            else:
+                res._bytes.append(b)
+                in_word = False
+            i = i + 1 to i64
+        return res
+
+    public fn strip(self as ptr[Bytes]) as Bytes:
+        let left as Bytes = self.lstrip()
+        return left.rstrip()
+
+    public fn lstrip(self as ptr[Bytes]) as Bytes:
+        var res as Bytes = Bytes()
+        let n as i64 = self.length()
+        var start as i64 = 0 to i64
+        while start < n:
+            let b as u8 = (deref self)._bytes[start]
+            if b != 32 to u8 and b != 9 to u8 and b != 10 to u8 and b != 13 to u8:
+                break
+            start = start + 1 to i64
+        var i as i64 = start
+        while i < n:
+            res._bytes.append((deref self)._bytes[i])
+            i = i + 1 to i64
+        return res
+
+    public fn rstrip(self as ptr[Bytes]) as Bytes:
+        var res as Bytes = Bytes()
+        let n as i64 = self.length()
+        var end as i64 = n - 1 to i64
+        while end >= 0 to i64:
+            let b as u8 = (deref self)._bytes[end]
+            if b != 32 to u8 and b != 9 to u8 and b != 10 to u8 and b != 13 to u8:
+                break
+            end = end - 1 to i64
+        var i as i64 = 0 to i64
+        while i <= end:
+            res._bytes.append((deref self)._bytes[i])
+            i = i + 1 to i64
+        return res
+
+    public fn replace(self as ptr[Bytes], old_b as u8, new_b as u8) as Bytes:
+        var res as Bytes = Bytes()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b == old_b:
+                res._bytes.append(new_b)
+            else:
+                res._bytes.append(b)
+            i = i + 1 to i64
+        return res
+
+    public fn split(self as ptr[Bytes], sep as u8) as List[Bytes]:
+        var parts as List[Bytes] = List[Bytes]()
+        var cur as Bytes = Bytes()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b == sep:
+                parts.append(cur)
+                cur = Bytes()
+            else:
+                cur._bytes.append(b)
+            i = i + 1 to i64
+        parts.append(cur)
+        return parts
+
+    public fn partition(self as ptr[Bytes], sep as u8) as List[Bytes]:
+        var res as List[Bytes] = List[Bytes]()
+        let idx as i64 = self.find(sep)
+        var p1 as Bytes = Bytes()
+        var p2 as Bytes = Bytes()
+        var p3 as Bytes = Bytes()
+        let n as i64 = self.length()
+        if idx >= 0 to i64:
+            var i as i64 = 0 to i64
+            while i < idx:
+                p1._bytes.append((deref self)._bytes[i])
+                i = i + 1 to i64
+            p2._bytes.append(sep)
+            var j as i64 = idx + 1 to i64
+            while j < n:
+                p3._bytes.append((deref self)._bytes[j])
+                j = j + 1 to i64
+        else:
+            var k as i64 = 0 to i64
+            while k < n:
+                p1._bytes.append((deref self)._bytes[k])
+                k = k + 1 to i64
+        res.append(p1)
+        res.append(p2)
+        res.append(p3)
+        return res
+
+    public fn join(self as ptr[Bytes], parts as List[Bytes]) as Bytes:
+        var res as Bytes = Bytes()
+        let n as i64 = parts.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            if i > 0 to i64:
+                let slen as i64 = self.length()
+                var s_idx as i64 = 0 to i64
+                while s_idx < slen:
+                    res._bytes.append((deref self)._bytes[s_idx])
+                    s_idx = s_idx + 1 to i64
+            let p as Bytes = parts[i]
+            let plen as i64 = p.length()
+            var p_idx as i64 = 0 to i64
+            while p_idx < plen:
+                res._bytes.append(p._bytes[p_idx])
+                p_idx = p_idx + 1 to i64
+            i = i + 1 to i64
+        return res
+
+    public fn center(self as ptr[Bytes], width as i64) as Bytes:
+        let n as i64 = self.length()
+        if width <= n:
+            return Bytes.from_list((deref self)._bytes)
+        let total_pad as i64 = width - n
+        let left_pad as i64 = total_pad / 2 to i64
+        let right_pad as i64 = total_pad - left_pad
+        var res as Bytes = Bytes()
+        var i as i64 = 0 to i64
+        while i < left_pad:
+            res._bytes.append(32 to u8)
+            i = i + 1 to i64
+        var j as i64 = 0 to i64
+        while j < n:
+            res._bytes.append((deref self)._bytes[j])
+            j = j + 1 to i64
+        var k as i64 = 0 to i64
+        while k < right_pad:
+            res._bytes.append(32 to u8)
+            k = k + 1 to i64
+        return res
+
+    public fn ljust(self as ptr[Bytes], width as i64) as Bytes:
+        let n as i64 = self.length()
+        if width <= n:
+            return Bytes.from_list((deref self)._bytes)
+        var res as Bytes = Bytes()
+        var j as i64 = 0 to i64
+        while j < n:
+            res._bytes.append((deref self)._bytes[j])
+            j = j + 1 to i64
+        var i as i64 = 0 to i64
+        while i < (width - n):
+            res._bytes.append(32 to u8)
+            i = i + 1 to i64
+        return res
+
+    public fn rjust(self as ptr[Bytes], width as i64) as Bytes:
+        let n as i64 = self.length()
+        if width <= n:
+            return Bytes.from_list((deref self)._bytes)
+        var res as Bytes = Bytes()
+        var i as i64 = 0 to i64
+        while i < (width - n):
+            res._bytes.append(32 to u8)
+            i = i + 1 to i64
+        var j as i64 = 0 to i64
+        while j < n:
+            res._bytes.append((deref self)._bytes[j])
+            j = j + 1 to i64
+        return res
+
+    public fn zfill(self as ptr[Bytes], width as i64) as Bytes:
+        let n as i64 = self.length()
+        if width <= n:
+            return Bytes.from_list((deref self)._bytes)
+        var res as Bytes = Bytes()
+        var i as i64 = 0 to i64
+        while i < (width - n):
+            res._bytes.append(48 to u8)
+            i = i + 1 to i64
+        var j as i64 = 0 to i64
+        while j < n:
+            res._bytes.append((deref self)._bytes[j])
+            j = j + 1 to i64
+        return res
+
+    public fn isalnum(self as ptr[Bytes]) as bool:
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return False
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            let is_an as bool = (b >= 48 to u8 and b <= 57 to u8) or (b >= 65 to u8 and b <= 90 to u8) or (b >= 97 to u8 and b <= 122 to u8)
+            if not is_an:
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn isalpha(self as ptr[Bytes]) as bool:
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return False
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            let is_a as bool = (b >= 65 to u8 and b <= 90 to u8) or (b >= 97 to u8 and b <= 122 to u8)
+            if not is_a:
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn isascii(self as ptr[Bytes]) as bool:
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            if (deref self)._bytes[i] > 127 to u8:
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn isspace(self as ptr[Bytes]) as bool:
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return False
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b != 32 to u8 and b != 9 to u8 and b != 10 to u8 and b != 13 to u8:
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn islower(self as ptr[Bytes]) as bool:
+        let n as i64 = self.length()
+        var has_cased as bool = False
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b >= 65 to u8 and b <= 90 to u8:
+                return False
+            if b >= 97 to u8 and b <= 122 to u8:
+                has_cased = True
+            i = i + 1 to i64
+        return has_cased
+
+    public fn isupper(self as ptr[Bytes]) as bool:
+        let n as i64 = self.length()
+        var has_cased as bool = False
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b >= 97 to u8 and b <= 122 to u8:
+                return False
+            if b >= 65 to u8 and b <= 90 to u8:
+                has_cased = True
+            i = i + 1 to i64
+        return has_cased
+
+// ── ByteArray ─────────────────────────────────────────────────────────
+// Mutable sequence of bytes, providing full parity with Python's bytearray
+// data model (Section 12).
+struct ByteArray:
+    public var _bytes as List[u8] = List[u8]()
+
+    public fn __init__(self as ptr[ByteArray]):
+        (deref self)._bytes = List[u8]()
+
+    public fn init(self as ptr[ByteArray]):
+        (deref self)._bytes = List[u8]()
+
+    public fn from_list(l as List[u8]) as ByteArray:
+        var b as ByteArray = ByteArray()
+        let n as i64 = l.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            b._bytes.append(l[i])
+            i = i + 1 to i64
+        return b
+
+    public fn from_str(s as String) as ByteArray:
+        var b as ByteArray = ByteArray()
+        let n as i64 = s.len to i64
+        var i as i64 = 0 to i64
+        while i < n:
+            b._bytes.append(s.data[i])
+            i = i + 1 to i64
+        return b
+
+    public fn from_cstr(cs as cstr) as ByteArray:
+        var b as ByteArray = ByteArray()
+        if cs != None to cstr:
+            extern fn strlen(s as cstr) as usize
+            let n as i64 = strlen(cs) to i64
+            var i as i64 = 0 to i64
+            while i < n:
+                b._bytes.append(cs[i])
+                i = i + 1 to i64
+        return b
+
+    public fn from_bytes(b as Bytes) as ByteArray:
+        var ba as ByteArray = ByteArray()
+        ba._bytes = b.to_list()
+        return ba
+
+    public fn fromhex(hex_str as cstr) as ByteArray:
+        let b as Bytes = Bytes.fromhex(hex_str)
+        return ByteArray.from_bytes(b)
+
+    public fn to_bytes(self as ptr[ByteArray]) as Bytes:
+        return Bytes.from_list((deref self)._bytes)
+
+    public fn to_list(self as ptr[ByteArray]) as List[u8]:
+        var res as List[u8] = List[u8]()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            res.append((deref self)._bytes[i])
+            i = i + 1 to i64
+        return res
+
+    public fn to_str(self as ptr[ByteArray]) as String:
+        return self.decode()
+
+    public fn length(self as ptr[ByteArray]) as i64:
+        return (deref self)._bytes.length()
+
+    public fn get(self as ptr[ByteArray], idx as i64) as u8:
+        return (deref self)._bytes[idx]
+
+    public fn set(self as ptr[ByteArray], idx as i64, val as u8):
+        (deref self)._bytes[idx] = val
+
+    public fn __getitem__(self as ByteArray, idx as i64) -> u8:
+        return self._bytes[idx]
+
+    public fn count(self as ptr[ByteArray], byte_val as u8) as i64:
+        var c as i64 = 0 to i64
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            if (deref self)._bytes[i] == byte_val:
+                c = c + 1 to i64
+            i = i + 1 to i64
+        return c
+
+    public fn find(self as ptr[ByteArray], byte_val as u8) as i64:
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            if (deref self)._bytes[i] == byte_val:
+                return i
+            i = i + 1 to i64
+        return -1 to i64
+
+    public fn index(self as ptr[ByteArray], byte_val as u8) as i64:
+        return self.find(byte_val)
+
+    public fn contains(self as ptr[ByteArray], byte_val as u8) as bool:
+        return self.find(byte_val) >= 0 to i64
+
+    public fn startswith(self as ptr[ByteArray], prefix as ptr[ByteArray]) as bool:
+        let plen as i64 = prefix.length()
+        if plen > self.length():
+            return False
+        var i as i64 = 0 to i64
+        while i < plen:
+            if (deref self)._bytes[i] != prefix.get(i):
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn endswith(self as ptr[ByteArray], suffix as ptr[ByteArray]) as bool:
+        let slen as i64 = suffix.length()
+        let tlen as i64 = self.length()
+        if slen > tlen:
+            return False
+        let offset as i64 = tlen - slen
+        var i as i64 = 0 to i64
+        while i < slen:
+            if (deref self)._bytes[offset + i] != suffix.get(i):
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn removeprefix(self as ptr[ByteArray], prefix as ptr[ByteArray]) as ByteArray:
+        if self.startswith(prefix):
+            var res as ByteArray = ByteArray()
+            let plen as i64 = prefix.length()
+            let n as i64 = self.length()
+            var i as i64 = plen
+            while i < n:
+                res._bytes.append((deref self)._bytes[i])
+                i = i + 1 to i64
+            return res
+        return ByteArray.from_list((deref self)._bytes)
+
+    public fn removesuffix(self as ptr[ByteArray], suffix as ptr[ByteArray]) as ByteArray:
+        if self.endswith(suffix):
+            var res as ByteArray = ByteArray()
+            let slen as i64 = suffix.length()
+            let stop as i64 = self.length() - slen
+            var i as i64 = 0 to i64
+            while i < stop:
+                res._bytes.append((deref self)._bytes[i])
+                i = i + 1 to i64
+            return res
+        return ByteArray.from_list((deref self)._bytes)
+
+    public fn lower(self as ptr[ByteArray]) as ByteArray:
+        var res as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b >= 65 to u8 and b <= 90 to u8:
+                res._bytes.append(b + 32 to u8)
+            else:
+                res._bytes.append(b)
+            i = i + 1 to i64
+        return res
+
+    public fn upper(self as ptr[ByteArray]) as ByteArray:
+        var res as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b >= 97 to u8 and b <= 122 to u8:
+                res._bytes.append(b - 32 to u8)
+            else:
+                res._bytes.append(b)
+            i = i + 1 to i64
+        return res
+
+    public fn strip(self as ptr[ByteArray]) as ByteArray:
+        let n as i64 = self.length()
+        var start as i64 = 0 to i64
+        while start < n:
+            let b as u8 = (deref self)._bytes[start]
+            if b != 32 to u8 and b != 9 to u8 and b != 10 to u8 and b != 13 to u8:
+                break
+            start = start + 1 to i64
+        var end as i64 = n - 1 to i64
+        while end >= start:
+            let b as u8 = (deref self)._bytes[end]
+            if b != 32 to u8 and b != 9 to u8 and b != 10 to u8 and b != 13 to u8:
+                break
+            end = end - 1 to i64
+        var res as ByteArray = ByteArray()
+        var i as i64 = start
+        while i <= end:
+            res._bytes.append((deref self)._bytes[i])
+            i = i + 1 to i64
+        return res
+
+    public fn replace(self as ptr[ByteArray], old_b as u8, new_b as u8) as ByteArray:
+        var res as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b == old_b:
+                res._bytes.append(new_b)
+            else:
+                res._bytes.append(b)
+            i = i + 1 to i64
+        return res
+
+    public fn decode(self as ptr[ByteArray]) as String:
+        var s as String = ""
+        __mantiq_list_decode((ref s) to ptr, (ref (deref self)._bytes) to ptr)
+        return s
+
+    public fn hex(self as ptr[ByteArray]) as String:
+        var s as String = ""
+        __mantiq_list_hex((ref s) to ptr, (ref (deref self)._bytes) to ptr)
+        return s
+
+    public fn append(self as ptr[ByteArray], val as u8):
+        (deref self)._bytes.append(val)
+
+    public fn extend(self as ptr[ByteArray], other as ptr[ByteArray]):
+        let n as i64 = other.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            self.append(other.get(i))
+            i = i + 1 to i64
+
+    public fn insert(self as ptr[ByteArray], idx as i64, val as u8):
+        var v as u8 = val
+        __mantiq_list_insert((ref (deref self)._bytes) to ptr, idx, (ref v) to ptr, 1 to i64)
+
+    public fn remove(self as ptr[ByteArray], val as u8) as bool:
+        var v as u8 = val
+        let r as i8 = __mantiq_list_remove((ref (deref self)._bytes) to ptr, (ref v) to ptr, 1 to i64)
+        return r != 0 to i8
+
+    public fn pop(self as ptr[ByteArray]) as u8:
+        let n as i64 = self.length()
+        if n > 0 to i64:
+            let last as u8 = (deref self)._bytes[n - 1 to i64]
+            var dummy as u8 = 0 to u8
+            let _ as i8 = __mantiq_list_pop((ref (deref self)._bytes) to ptr, (ref dummy) to ptr, 1 to i64)
+            return last
+        return 0 to u8
+
+    public fn pop_index(self as ptr[ByteArray], idx as i64) as u8:
+        var val as u8 = 0 to u8
+        let _ as i8 = __mantiq_list_pop_index((ref (deref self)._bytes) to ptr, idx, (ref val) to ptr, 1 to i64)
+        return val
+
+    public fn clear(self as ptr[ByteArray]):
+        (deref self)._bytes.clear()
+
+    public fn reverse(self as ptr[ByteArray]):
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        var j as i64 = n - 1 to i64
+        while i < j:
+            let tmp as u8 = (deref self)._bytes[i]
+            (deref self)._bytes[i] = (deref self)._bytes[j]
+            (deref self)._bytes[j] = tmp
+            i = i + 1 to i64
+            j = j - 1 to i64
+
+    public fn copy(self as ptr[ByteArray]) as ByteArray:
+        var ba as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            ba._bytes.append((deref self)._bytes[i])
+            i = i + 1 to i64
+        return ba
+
