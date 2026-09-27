@@ -1368,6 +1368,64 @@ void __mantiq_dict_clear(MantiqDict* d) {
     memset(d->occupied, 0, d->capacity);
 }
 
+void __mantiq_dict_fromkeys(void* dest_addr, void* src_dict_addr, void* list_addr, void* default_val_ptr, int32_t key_size, int32_t val_size) {
+    struct MantiqRawFat {
+        MantiqDict* dict;
+        size_t len;
+        size_t cap;
+    };
+    struct MantiqRawFat* dest = (struct MantiqRawFat*)dest_addr;
+    struct MantiqRawFat* src = (struct MantiqRawFat*)src_dict_addr;
+    if (!dest) return;
+    dest->dict = NULL;
+    dest->len = 0;
+    dest->cap = 0;
+    if (!list_addr) return;
+    struct List {
+        void* data;
+        size_t len;
+        size_t cap;
+    }* l = (struct List*)list_addr;
+
+    int32_t ks = key_size > 0 ? key_size : ((src && src->dict && src->dict->key_size > 0) ? src->dict->key_size : 8);
+    int32_t vs = val_size > 0 ? val_size : ((src && src->dict && src->dict->val_size > 0) ? src->dict->val_size : 8);
+    int32_t is_str = (src && src->dict && src->dict->is_string_key > 0) ? src->dict->is_string_key : 0;
+    if (is_str == 0) {
+        if (ks == (int32_t)(sizeof(size_t) * 3)) {
+            is_str = 2;
+        } else if (ks == (int32_t)(sizeof(size_t) * 2)) {
+            is_str = 1;
+        }
+    }
+    if (ks <= 0) ks = 8;
+    if (vs <= 0) vs = 8;
+    int32_t init_cap = (int32_t)(l->len > 8 ? l->len * 2 : 8);
+    MantiqDict* new_dict = __mantiq_dict_create_with_capacity(ks, vs, is_str, init_cap);
+    void* zero_val = NULL;
+    if (!default_val_ptr) {
+        zero_val = calloc(1, (size_t)vs);
+        default_val_ptr = zero_val;
+    }
+    for (size_t i = 0; i < l->len; i++) {
+        void* key_ptr = (char*)l->data + (i * ks);
+        uint32_t hash;
+        if (is_str == 1) {
+            struct MantiqStr { const char* ptr; size_t len; }* s = (struct MantiqStr*)key_ptr;
+            hash = __mantiq_hash_string(s->ptr, (int64_t)s->len);
+        } else if (is_str == 2) {
+            struct MantiqHeapStr { const char* ptr; size_t len; size_t cap; }* s = (struct MantiqHeapStr*)key_ptr;
+            hash = __mantiq_hash_string(s->ptr, (int64_t)s->len);
+        } else {
+            hash = __mantiq_hash_bytes((const uint8_t*)key_ptr, (int64_t)ks);
+        }
+        __mantiq_dict_set(new_dict, key_ptr, default_val_ptr, hash);
+    }
+    if (zero_val) free(zero_val);
+    dest->dict = new_dict;
+    dest->len = (size_t)new_dict->count;
+    dest->cap = (size_t)new_dict->capacity;
+}
+
 void __mantiq_dict_merge(MantiqDict* dest, MantiqDict* src) {
     if (!dest || !src) return;
     for (int32_t i = 0; i < src->capacity; i++) {

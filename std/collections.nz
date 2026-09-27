@@ -502,6 +502,39 @@ struct Tuple4[A, B, C, D]:
     public fn get3(self as ptr[Tuple4[A, B, C, D]]) as D:
         return (deref self).v3
 
+// ── Dictionary Views ──────────────────────────────────────────────────
+struct DictItems[K, V]:
+    public var _dict as Dict[K, V]
+
+    public fn make(d as Dict[K, V]) as DictItems[K, V]:
+        return DictItems[K, V](_dict = d)
+
+    public fn length(self as ptr[DictItems[K, V]]) as usize:
+        return (deref self)._dict.length()
+
+    public fn len(self as ptr[DictItems[K, V]]) as usize:
+        return (deref self)._dict.length()
+
+    public fn keys(self as ptr[DictItems[K, V]]) as List[K]:
+        return (deref self)._dict.keys()
+
+    public fn values(self as ptr[DictItems[K, V]]) as List[V]:
+        return (deref self)._dict.values()
+
+    public fn mapping(self as ptr[DictItems[K, V]]) as Dict[K, V]:
+        return (deref self)._dict
+
+    public fn to_list(self as ptr[DictItems[K, V]]) as List[Tuple2[K, V]]:
+        var res as List[Tuple2[K, V]] = List[Tuple2[K, V]]()
+        let ks as List[K] = (deref self)._dict.keys()
+        let vs as List[V] = (deref self)._dict.values()
+        let n as i64 = ks.length() to i64
+        var i as i64 = 0 to i64
+        while i < n:
+            res.append(Tuple2[K, V](v0 = ks[i], v1 = vs[i]))
+            i = i + 1 to i64
+        return res
+
 // ── Bytes ─────────────────────────────────────────────────────────────
 // Immutable sequence of bytes, providing full parity with Python's bytes
 // data model (Section 11).
