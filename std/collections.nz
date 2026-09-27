@@ -1010,6 +1010,178 @@ struct Bytes:
             i = i + 1 to i64
         return has_cased
 
+    public fn expandtabs(self as ptr[Bytes], tabsize as i64 = 8 to i64) as Bytes:
+        let ts as i64 = if tabsize > 0 to i64: tabsize else: 0 to i64
+        var res as Bytes = Bytes()
+        let n as i64 = self.length()
+        var col as i64 = 0 to i64
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b == 9 to u8:
+                if ts > 0 to i64:
+                    let spaces as i64 = ts - (col % ts)
+                    var s_i as i64 = 0 to i64
+                    while s_i < spaces:
+                        res._bytes.append(32 to u8)
+                        col = col + 1 to i64
+                        s_i = s_i + 1 to i64
+            elif b == 10 to u8 or b == 13 to u8:
+                res._bytes.append(b)
+                col = 0 to i64
+            else:
+                res._bytes.append(b)
+                col = col + 1 to i64
+            i = i + 1 to i64
+        return res
+
+    public fn maketrans(from_bytes as ptr[Bytes], to_bytes as ptr[Bytes]) as Dict[i64, i64]:
+        var table as Dict[i64, i64] = Dict[i64, i64]()
+        let f_len as i64 = from_bytes.length()
+        let t_len as i64 = to_bytes.length()
+        let min_len as i64 = if f_len < t_len: f_len else: t_len
+        var i as i64 = 0 to i64
+        while i < min_len:
+            let k as i64 = from_bytes.get(i) to i64
+            let v as i64 = to_bytes.get(i) to i64
+            table[k] = v
+            i = i + 1 to i64
+        return table
+
+    public fn maketrans_cstr(from_s as cstr, to_s as cstr) as Dict[i64, i64]:
+        extern fn strlen(s as cstr) as usize
+        var table as Dict[i64, i64] = Dict[i64, i64]()
+        if from_s != None to cstr and to_s != None to cstr:
+            let f_len as usize = strlen(from_s)
+            let t_len as usize = strlen(to_s)
+            let min_len as usize = if f_len < t_len: f_len else: t_len
+            var i as usize = 0 to usize
+            while i < min_len:
+                let k as i64 = from_s[i] to i64
+                let v as i64 = to_s[i] to i64
+                table[k] = v
+                i = i + 1 to usize
+        return table
+
+    public fn translate(self as ptr[Bytes], table as Dict[i64, i64]) as Bytes:
+        var res as Bytes = Bytes()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as i64 = (deref self)._bytes[i] to i64
+            if table.has(b):
+                let repl as i64 = table[b]
+                if repl >= 0 to i64:
+                    res._bytes.append(repl to u8)
+            else:
+                res._bytes.append(b to u8)
+            i = i + 1 to i64
+        return res
+
+    public fn rpartition(self as ptr[Bytes], sep as u8) as List[Bytes]:
+        var res as List[Bytes] = List[Bytes]()
+        let idx as i64 = self.rfind(sep)
+        var p1 as Bytes = Bytes()
+        var p2 as Bytes = Bytes()
+        var p3 as Bytes = Bytes()
+        let n as i64 = self.length()
+        if idx >= 0 to i64:
+            var i as i64 = 0 to i64
+            while i < idx:
+                p1._bytes.append((deref self)._bytes[i])
+                i = i + 1 to i64
+            p2._bytes.append(sep)
+            var j as i64 = idx + 1 to i64
+            while j < n:
+                p3._bytes.append((deref self)._bytes[j])
+                j = j + 1 to i64
+        else:
+            var k as i64 = 0 to i64
+            while k < n:
+                p3._bytes.append((deref self)._bytes[k])
+                k = k + 1 to i64
+        res.append(p1)
+        res.append(p2)
+        res.append(p3)
+        return res
+
+    public fn rsplit(self as ptr[Bytes], sep as u8, maxsplit as i64 = -1 to i64) as List[Bytes]:
+        if maxsplit == 0 to i64:
+            var res as List[Bytes] = List[Bytes]()
+            res.append(Bytes.from_list((deref self)._bytes))
+            return res
+        if maxsplit < 0 to i64:
+            return self.split(sep)
+        var rev_parts as List[Bytes] = List[Bytes]()
+        let n as i64 = self.length()
+        var end_pos as i64 = n - 1 to i64
+        var split_cnt as i64 = 0 to i64
+        while end_pos >= 0 to i64 and split_cnt < maxsplit:
+            var cur as i64 = end_pos
+            var found_idx as i64 = -1 to i64
+            while cur >= 0 to i64:
+                if (deref self)._bytes[cur] == sep:
+                    found_idx = cur
+                    break
+                cur = cur - 1 to i64
+            if found_idx < 0 to i64:
+                break
+            var part as Bytes = Bytes()
+            var j as i64 = found_idx + 1 to i64
+            while j <= end_pos:
+                part._bytes.append((deref self)._bytes[j])
+                j = j + 1 to i64
+            rev_parts.append(part)
+            split_cnt = split_cnt + 1 to i64
+            end_pos = found_idx - 1 to i64
+        var rem as Bytes = Bytes()
+        var k as i64 = 0 to i64
+        while k <= end_pos:
+            rem._bytes.append((deref self)._bytes[k])
+            k = k + 1 to i64
+        rev_parts.append(rem)
+        var res as List[Bytes] = List[Bytes]()
+        var r_i as i64 = rev_parts.length() - 1 to i64
+        while r_i >= 0 to i64:
+            res.append(rev_parts[r_i])
+            r_i = r_i - 1 to i64
+        return res
+
+    public fn splitlines(self as ptr[Bytes], keepends as bool = False) as List[Bytes]:
+        var res as List[Bytes] = List[Bytes]()
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return res
+        var start as i64 = 0 to i64
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b == 10 to u8 or b == 13 to u8:
+                var end_seg as i64 = i
+                var skip as i64 = 1 to i64
+                if b == 13 to u8 and (i + 1 to i64) < n and (deref self)._bytes[i + 1 to i64] == 10 to u8:
+                    skip = 2 to i64
+                if keepends:
+                    end_seg = i + skip
+                var part as Bytes = Bytes()
+                var j as i64 = start
+                while j < end_seg:
+                    part._bytes.append((deref self)._bytes[j])
+                    j = j + 1 to i64
+                res.append(part)
+                i = i + skip
+                start = i
+            else:
+                i = i + 1 to i64
+        if start < n:
+            var part as Bytes = Bytes()
+            var k as i64 = start
+            while k < n:
+                part._bytes.append((deref self)._bytes[k])
+                k = k + 1 to i64
+            res.append(part)
+        return res
+
 // ── ByteArray ─────────────────────────────────────────────────────────
 // Mutable sequence of bytes, providing full parity with Python's bytearray
 // data model (Section 12).
@@ -1285,4 +1457,456 @@ struct ByteArray:
             ba._bytes.append((deref self)._bytes[i])
             i = i + 1 to i64
         return ba
+
+    public fn swapcase(self as ptr[ByteArray]) as ByteArray:
+        var res as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b >= 65 to u8 and b <= 90 to u8:
+                res._bytes.append(b + 32 to u8)
+            elif b >= 97 to u8 and b <= 122 to u8:
+                res._bytes.append(b - 32 to u8)
+            else:
+                res._bytes.append(b)
+            i = i + 1 to i64
+        return res
+
+    public fn capitalize(self as ptr[ByteArray]) as ByteArray:
+        var res as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return res
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if i == 0 to i64:
+                if b >= 97 to u8 and b <= 122 to u8:
+                    res._bytes.append(b - 32 to u8)
+                else:
+                    res._bytes.append(b)
+            else:
+                if b >= 65 to u8 and b <= 90 to u8:
+                    res._bytes.append(b + 32 to u8)
+                else:
+                    res._bytes.append(b)
+            i = i + 1 to i64
+        return res
+
+    public fn title(self as ptr[ByteArray]) as ByteArray:
+        var res as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        var in_word as bool = False
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            let is_alpha as bool = (b >= 65 to u8 and b <= 90 to u8) or (b >= 97 to u8 and b <= 122 to u8)
+            if is_alpha:
+                if not in_word:
+                    if b >= 97 to u8 and b <= 122 to u8:
+                        res._bytes.append(b - 32 to u8)
+                    else:
+                        res._bytes.append(b)
+                    in_word = True
+                else:
+                    if b >= 65 to u8 and b <= 90 to u8:
+                        res._bytes.append(b + 32 to u8)
+                    else:
+                        res._bytes.append(b)
+            else:
+                res._bytes.append(b)
+                in_word = False
+            i = i + 1 to i64
+        return res
+
+    public fn lstrip(self as ptr[ByteArray]) as ByteArray:
+        var res as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        var start as i64 = 0 to i64
+        while start < n:
+            let b as u8 = (deref self)._bytes[start]
+            if b != 32 to u8 and b != 9 to u8 and b != 10 to u8 and b != 13 to u8:
+                break
+            start = start + 1 to i64
+        var i as i64 = start
+        while i < n:
+            res._bytes.append((deref self)._bytes[i])
+            i = i + 1 to i64
+        return res
+
+    public fn rstrip(self as ptr[ByteArray]) as ByteArray:
+        var res as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        var end as i64 = n - 1 to i64
+        while end >= 0 to i64:
+            let b as u8 = (deref self)._bytes[end]
+            if b != 32 to u8 and b != 9 to u8 and b != 10 to u8 and b != 13 to u8:
+                break
+            end = end - 1 to i64
+        var i as i64 = 0 to i64
+        while i <= end:
+            res._bytes.append((deref self)._bytes[i])
+            i = i + 1 to i64
+        return res
+
+    public fn split(self as ptr[ByteArray], sep as u8) as List[ByteArray]:
+        var parts as List[ByteArray] = List[ByteArray]()
+        var cur as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b == sep:
+                parts.append(cur)
+                cur = ByteArray()
+            else:
+                cur._bytes.append(b)
+            i = i + 1 to i64
+        parts.append(cur)
+        return parts
+
+    public fn rsplit(self as ptr[ByteArray], sep as u8, maxsplit as i64 = -1 to i64) as List[ByteArray]:
+        if maxsplit == 0 to i64:
+            var res as List[ByteArray] = List[ByteArray]()
+            res.append(ByteArray.from_list((deref self)._bytes))
+            return res
+        if maxsplit < 0 to i64:
+            return self.split(sep)
+        var rev_parts as List[ByteArray] = List[ByteArray]()
+        let n as i64 = self.length()
+        var end_pos as i64 = n - 1 to i64
+        var split_cnt as i64 = 0 to i64
+        while end_pos >= 0 to i64 and split_cnt < maxsplit:
+            var cur as i64 = end_pos
+            var found_idx as i64 = -1 to i64
+            while cur >= 0 to i64:
+                if (deref self)._bytes[cur] == sep:
+                    found_idx = cur
+                    break
+                cur = cur - 1 to i64
+            if found_idx < 0 to i64:
+                break
+            var part as ByteArray = ByteArray()
+            var j as i64 = found_idx + 1 to i64
+            while j <= end_pos:
+                part._bytes.append((deref self)._bytes[j])
+                j = j + 1 to i64
+            rev_parts.append(part)
+            split_cnt = split_cnt + 1 to i64
+            end_pos = found_idx - 1 to i64
+        var rem as ByteArray = ByteArray()
+        var k as i64 = 0 to i64
+        while k <= end_pos:
+            rem._bytes.append((deref self)._bytes[k])
+            k = k + 1 to i64
+        rev_parts.append(rem)
+        var res as List[ByteArray] = List[ByteArray]()
+        var r_i as i64 = rev_parts.length() - 1 to i64
+        while r_i >= 0 to i64:
+            res.append(rev_parts[r_i])
+            r_i = r_i - 1 to i64
+        return res
+
+    public fn partition(self as ptr[ByteArray], sep as u8) as List[ByteArray]:
+        var res as List[ByteArray] = List[ByteArray]()
+        let idx as i64 = self.find(sep)
+        var p1 as ByteArray = ByteArray()
+        var p2 as ByteArray = ByteArray()
+        var p3 as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        if idx >= 0 to i64:
+            var i as i64 = 0 to i64
+            while i < idx:
+                p1._bytes.append((deref self)._bytes[i])
+                i = i + 1 to i64
+            p2._bytes.append(sep)
+            var j as i64 = idx + 1 to i64
+            while j < n:
+                p3._bytes.append((deref self)._bytes[j])
+                j = j + 1 to i64
+        else:
+            var k as i64 = 0 to i64
+            while k < n:
+                p1._bytes.append((deref self)._bytes[k])
+                k = k + 1 to i64
+        res.append(p1)
+        res.append(p2)
+        res.append(p3)
+        return res
+
+    public fn rpartition(self as ptr[ByteArray], sep as u8) as List[ByteArray]:
+        var res as List[ByteArray] = List[ByteArray]()
+        let idx as i64 = self.rfind(sep)
+        var p1 as ByteArray = ByteArray()
+        var p2 as ByteArray = ByteArray()
+        var p3 as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        if idx >= 0 to i64:
+            var i as i64 = 0 to i64
+            while i < idx:
+                p1._bytes.append((deref self)._bytes[i])
+                i = i + 1 to i64
+            p2._bytes.append(sep)
+            var j as i64 = idx + 1 to i64
+            while j < n:
+                p3._bytes.append((deref self)._bytes[j])
+                j = j + 1 to i64
+        else:
+            var k as i64 = 0 to i64
+            while k < n:
+                p3._bytes.append((deref self)._bytes[k])
+                k = k + 1 to i64
+        res.append(p1)
+        res.append(p2)
+        res.append(p3)
+        return res
+
+    public fn splitlines(self as ptr[ByteArray], keepends as bool = False) as List[ByteArray]:
+        var res as List[ByteArray] = List[ByteArray]()
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return res
+        var start as i64 = 0 to i64
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b == 10 to u8 or b == 13 to u8:
+                var end_seg as i64 = i
+                var skip as i64 = 1 to i64
+                if b == 13 to u8 and (i + 1 to i64) < n and (deref self)._bytes[i + 1 to i64] == 10 to u8:
+                    skip = 2 to i64
+                if keepends:
+                    end_seg = i + skip
+                var part as ByteArray = ByteArray()
+                var j as i64 = start
+                while j < end_seg:
+                    part._bytes.append((deref self)._bytes[j])
+                    j = j + 1 to i64
+                res.append(part)
+                i = i + skip
+                start = i
+            else:
+                i = i + 1 to i64
+        if start < n:
+            var part as ByteArray = ByteArray()
+            var k as i64 = start
+            while k < n:
+                part._bytes.append((deref self)._bytes[k])
+                k = k + 1 to i64
+            res.append(part)
+        return res
+
+    public fn join(self as ptr[ByteArray], parts as List[ByteArray]) as ByteArray:
+        var res as ByteArray = ByteArray()
+        let n as i64 = parts.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            if i > 0 to i64:
+                let slen as i64 = self.length()
+                var s_idx as i64 = 0 to i64
+                while s_idx < slen:
+                    res._bytes.append((deref self)._bytes[s_idx])
+                    s_idx = s_idx + 1 to i64
+            let p as ByteArray = parts[i]
+            let plen as i64 = p.length()
+            var p_idx as i64 = 0 to i64
+            while p_idx < plen:
+                res._bytes.append(p._bytes[p_idx])
+                p_idx = p_idx + 1 to i64
+            i = i + 1 to i64
+        return res
+
+    public fn center(self as ptr[ByteArray], width as i64) as ByteArray:
+        let n as i64 = self.length()
+        if width <= n:
+            return ByteArray.from_list((deref self)._bytes)
+        let total_pad as i64 = width - n
+        let left_pad as i64 = total_pad / 2 to i64
+        let right_pad as i64 = total_pad - left_pad
+        var res as ByteArray = ByteArray()
+        var i as i64 = 0 to i64
+        while i < left_pad:
+            res._bytes.append(32 to u8)
+            i = i + 1 to i64
+        var j as i64 = 0 to i64
+        while j < n:
+            res._bytes.append((deref self)._bytes[j])
+            j = j + 1 to i64
+        var k as i64 = 0 to i64
+        while k < right_pad:
+            res._bytes.append(32 to u8)
+            k = k + 1 to i64
+        return res
+
+    public fn ljust(self as ptr[ByteArray], width as i64) as ByteArray:
+        let n as i64 = self.length()
+        if width <= n:
+            return ByteArray.from_list((deref self)._bytes)
+        var res as ByteArray = ByteArray()
+        var j as i64 = 0 to i64
+        while j < n:
+            res._bytes.append((deref self)._bytes[j])
+            j = j + 1 to i64
+        var i as i64 = 0 to i64
+        while i < (width - n):
+            res._bytes.append(32 to u8)
+            i = i + 1 to i64
+        return res
+
+    public fn rjust(self as ptr[ByteArray], width as i64) as ByteArray:
+        let n as i64 = self.length()
+        if width <= n:
+            return ByteArray.from_list((deref self)._bytes)
+        var res as ByteArray = ByteArray()
+        var i as i64 = 0 to i64
+        while i < (width - n):
+            res._bytes.append(32 to u8)
+            i = i + 1 to i64
+        var j as i64 = 0 to i64
+        while j < n:
+            res._bytes.append((deref self)._bytes[j])
+            j = j + 1 to i64
+        return res
+
+    public fn zfill(self as ptr[ByteArray], width as i64) as ByteArray:
+        let n as i64 = self.length()
+        if width <= n:
+            return ByteArray.from_list((deref self)._bytes)
+        var res as ByteArray = ByteArray()
+        var i as i64 = 0 to i64
+        while i < (width - n):
+            res._bytes.append(48 to u8)
+            i = i + 1 to i64
+        var j as i64 = 0 to i64
+        while j < n:
+            res._bytes.append((deref self)._bytes[j])
+            j = j + 1 to i64
+        return res
+
+    public fn expandtabs(self as ptr[ByteArray], tabsize as i64 = 8 to i64) as ByteArray:
+        let ts as i64 = if tabsize > 0 to i64: tabsize else: 0 to i64
+        var res as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        var col as i64 = 0 to i64
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b == 9 to u8:
+                if ts > 0 to i64:
+                    let spaces as i64 = ts - (col % ts)
+                    var s_i as i64 = 0 to i64
+                    while s_i < spaces:
+                        res._bytes.append(32 to u8)
+                        col = col + 1 to i64
+                        s_i = s_i + 1 to i64
+            elif b == 10 to u8 or b == 13 to u8:
+                res._bytes.append(b)
+                col = 0 to i64
+            else:
+                res._bytes.append(b)
+                col = col + 1 to i64
+            i = i + 1 to i64
+        return res
+
+    public fn translate(self as ptr[ByteArray], table as Dict[i64, i64]) as ByteArray:
+        var res as ByteArray = ByteArray()
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as i64 = (deref self)._bytes[i] to i64
+            if table.has(b):
+                let repl as i64 = table[b]
+                if repl >= 0 to i64:
+                    res._bytes.append(repl to u8)
+            else:
+                res._bytes.append(b to u8)
+            i = i + 1 to i64
+        return res
+
+    public fn rfind(self as ptr[ByteArray], byte_val as u8) as i64:
+        let n as i64 = self.length()
+        var i as i64 = n - 1 to i64
+        while i >= 0 to i64:
+            if (deref self)._bytes[i] == byte_val:
+                return i
+            i = i - 1 to i64
+        return -1 to i64
+
+    public fn rindex(self as ptr[ByteArray], byte_val as u8) as i64:
+        return self.rfind(byte_val)
+
+    public fn isalnum(self as ptr[ByteArray]) as bool:
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return False
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            let is_an as bool = (b >= 48 to u8 and b <= 57 to u8) or (b >= 65 to u8 and b <= 90 to u8) or (b >= 97 to u8 and b <= 122 to u8)
+            if not is_an:
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn isalpha(self as ptr[ByteArray]) as bool:
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return False
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            let is_a as bool = (b >= 65 to u8 and b <= 90 to u8) or (b >= 97 to u8 and b <= 122 to u8)
+            if not is_a:
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn isascii(self as ptr[ByteArray]) as bool:
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            if (deref self)._bytes[i] > 127 to u8:
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn isspace(self as ptr[ByteArray]) as bool:
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return False
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b != 32 to u8 and b != 9 to u8 and b != 10 to u8 and b != 13 to u8:
+                return False
+            i = i + 1 to i64
+        return True
+
+    public fn islower(self as ptr[ByteArray]) as bool:
+        let n as i64 = self.length()
+        var has_cased as bool = False
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b >= 65 to u8 and b <= 90 to u8:
+                return False
+            if b >= 97 to u8 and b <= 122 to u8:
+                has_cased = True
+            i = i + 1 to i64
+        return has_cased
+
+    public fn isupper(self as ptr[ByteArray]) as bool:
+        let n as i64 = self.length()
+        var has_cased as bool = False
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            if b >= 97 to u8 and b <= 122 to u8:
+                return False
+            if b >= 65 to u8 and b <= 90 to u8:
+                has_cased = True
+            i = i + 1 to i64
+        return has_cased
+
 
