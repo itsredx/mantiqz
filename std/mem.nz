@@ -1,0 +1,294 @@
+// ============================================================================
+// std/mem.nz
+// Nizam standard library module for pluggable memory management.
+//
+// This module provides:
+//   - Allocator             - vtable-based allocator interface
+//   - PageAllocator         - direct OS virtual memory page allocator (mmap/munmap)
+//   - ArenaAllocator        - monotonic arena allocator with O(1) batch tear-down
+//   - FixedBufferAllocator  - static/stack buffer allocator (for #no_std & embedded)
+//   - HeapAllocator         - general-purpose libc malloc/free wrapper
+//   - align_forward         - power-of-two memory address alignment utility
+// ============================================================================
+
+// ── External System Symbols ───────────────────────────────────────────
+extern fn malloc(req_size as usize) as ptr[u8]
+extern fn free(p as ptr)
+extern fn realloc(p as ptr, req_size as usize) as ptr[u8]
+extern fn memcpy(dest as ptr, src as ptr, n as usize) as ptr
+extern fn memset(s as ptr, c as i32, n as usize) as ptr
+extern fn mmap(addr as ptr, length as usize, prot as i32, flags as i32, fd as i32, offset as i64) as ptr[u8]
+extern fn munmap(addr as ptr, length as usize) as i32
+extern fn mantiq_page_alloc(req_size as usize) as ptr[u8]
+extern fn mantiq_page_free(ptr_val as ptr[u8], req_size as usize)
+
+// ── Alignment Utilities ───────────────────────────────────────────────
+fn align_forward(addr as usize, align as usize) as usize:
+    if align <= 1 to usize:
+        return addr
+    let rem as usize = addr % align
+    if rem != 0 to usize:
+        return addr + (align - rem)
+    return addr
+
+// ── Allocator Interface ───────────────────────────────────────────────
+struct Allocator:
+    public var ptr_alloc as fn(env as ptr, ctx as ptr[u8], req_size as usize, align as usize) as ptr[u8]
+    public var ptr_resize as fn(env as ptr, ctx as ptr[u8], old_ptr as ptr[u8], old_size as usize, new_size as usize) as ptr[u8]
+    public var ptr_free as fn(env as ptr, ctx as ptr[u8], ptr_val as ptr[u8], req_size as usize) as void
+    public var context as ptr[u8]
+
+    public fn alloc(self as ptr[Allocator], req_size as usize, align as usize = 8 to usize) as ptr[u8]:
+        return ((deref self).ptr_alloc)((deref self).context, req_size, align)
+
+    public fn resize(self as ptr[Allocator], old_ptr as ptr[u8], old_sz as usize, new_sz as usize) as ptr[u8]:
+        return ((deref self).ptr_resize)((deref self).context, old_ptr, old_sz, new_sz)
+
+    public fn free(self as ptr[Allocator], ptr_val as ptr[u8], req_size as usize = 0 to usize):
+        ((deref self).ptr_free)((deref self).context, ptr_val, req_size)
+
+// ── Page Allocator ────────────────────────────────────────────────────
+struct PageAllocator:
+    public var dummy as usize
+
+    public fn alloc(self as ptr[PageAllocator], req_size as usize, align as usize = 4096 to usize) as ptr[u8]:
+        if req_size == 0 to usize:
+            return None to ptr[u8]
+        let page_size as usize = 4096 to usize
+        let aligned_size as usize = ((req_size + page_size - 1 to usize) / page_size) * page_size
+        let res as ptr[u8] = mantiq_page_alloc(aligned_size)
+        if res == None to ptr[u8]:
+            return None to ptr[u8]
+        return res
+
+    public fn resize(self as ptr[PageAllocator], old_ptr as ptr[u8], old_sz as usize, new_sz as usize) as ptr[u8]:
+        if new_sz == 0 to usize:
+            if old_ptr != None to ptr[u8]:
+                self.free(old_ptr, old_sz)
+            return None to ptr[u8]
+        if old_ptr == None to ptr[u8]:
+            return self.alloc(new_sz, 4096 to usize)
+        let page_size as usize = 4096 to usize
+        let old_aligned as usize = ((old_sz + page_size - 1 to usize) / page_size) * page_size
+        let new_aligned as usize = ((new_sz + page_size - 1 to usize) / page_size) * page_size
+        if old_aligned == new_aligned:
+            return old_ptr
+        let new_ptr as ptr[u8] = self.alloc(new_sz, 4096 to usize)
+        if new_ptr == None to ptr[u8]:
+            return None to ptr[u8]
+        var copy_sz as usize = old_sz
+        if new_sz < copy_sz:
+            copy_sz = new_sz
+        memcpy(new_ptr to ptr, old_ptr to ptr, copy_sz)
+        self.free(old_ptr, old_sz)
+        return new_ptr
+
+    public fn free(self as ptr[PageAllocator], ptr_val as ptr[u8], req_size as usize):
+        if ptr_val == None to ptr[u8] or req_size == 0 to usize:
+            return
+        mantiq_page_free(ptr_val, req_size)
+
+    public fn allocator(self as ptr[PageAllocator]) as Allocator:
+        return Allocator(ptr_alloc = page_alloc_fn, ptr_resize = page_resize_fn, ptr_free = page_free_fn, context = self to ptr[u8])
+
+fn page_alloc_fn(env as ptr, ctx as ptr[u8], req_size as usize, align as usize) as ptr[u8]:
+    var pa as PageAllocator = PageAllocator(dummy = 0 to usize)
+    return pa.alloc(req_size, align)
+
+fn page_resize_fn(env as ptr, ctx as ptr[u8], old_ptr as ptr[u8], old_sz as usize, new_sz as usize) as ptr[u8]:
+    var pa as PageAllocator = PageAllocator(dummy = 0 to usize)
+    return pa.resize(old_ptr, old_sz, new_sz)
+
+fn page_free_fn(env as ptr, ctx as ptr[u8], ptr_val as ptr[u8], req_size as usize):
+    var pa as PageAllocator = PageAllocator(dummy = 0 to usize)
+    pa.free(ptr_val, req_size)
+
+fn get_page_allocator() as Allocator:
+    return Allocator(ptr_alloc = page_alloc_fn, ptr_resize = page_resize_fn, ptr_free = page_free_fn, context = None to ptr[u8])
+
+// ── Arena Allocator ───────────────────────────────────────────────────
+struct ArenaChunk:
+    public var next as ptr[ArenaChunk]
+    public var capacity as usize
+    public var offset as usize
+
+struct ArenaAllocator:
+    public var backing as ptr[Allocator]
+    public var head as ptr[ArenaChunk]
+    public var default_chunk_size as usize
+    public var total_allocated as usize
+
+    public fn init(self as ptr[ArenaAllocator], backing_alloc as ptr[Allocator] = None to ptr[Allocator], chunk_size as usize = 65536 to usize):
+        (deref self).backing = backing_alloc
+        (deref self).head = None to ptr[ArenaChunk]
+        if chunk_size < 1024 to usize:
+            (deref self).default_chunk_size = 65536 to usize
+        else:
+            (deref self).default_chunk_size = chunk_size
+        (deref self).total_allocated = 0 to usize
+
+    public fn alloc(self as ptr[ArenaAllocator], req_size as usize, align as usize = 8 to usize) as ptr[u8]:
+        if req_size == 0 to usize:
+            return None to ptr[u8]
+        let chunk_hdr_sz as usize = 32 to usize
+        let curr as ptr[ArenaChunk] = (deref self).head
+        if curr != None to ptr[ArenaChunk]:
+            let base_addr as usize = (curr to usize) + chunk_hdr_sz + (deref curr).offset
+            let aligned_addr as usize = align_forward(base_addr, align)
+            let pad as usize = aligned_addr - base_addr
+            let needed as usize = req_size + pad
+            if (deref curr).offset + needed <= (deref curr).capacity:
+                (deref curr).offset = (deref curr).offset + needed
+                (deref self).total_allocated = (deref self).total_allocated + needed
+                return aligned_addr to ptr[u8]
+
+        // Need new chunk
+        var new_cap as usize = (deref self).default_chunk_size
+        if req_size + 64 to usize > new_cap:
+            new_cap = req_size + 64 to usize
+        var raw_mem as ptr[u8] = None to ptr[u8]
+        if (deref self).backing != None to ptr[Allocator]:
+            raw_mem = (deref self).backing.alloc(new_cap + chunk_hdr_sz, 16 to usize)
+        else:
+            raw_mem = malloc(new_cap + chunk_hdr_sz)
+        if raw_mem == None to ptr[u8]:
+            return None to ptr[u8]
+
+        let new_chunk as ptr[ArenaChunk] = raw_mem to ptr[ArenaChunk]
+        (deref new_chunk).next = (deref self).head
+        (deref new_chunk).capacity = new_cap
+        (deref new_chunk).offset = 0 to usize
+        (deref self).head = new_chunk
+
+        let base_addr as usize = (new_chunk to usize) + chunk_hdr_sz
+        let aligned_addr as usize = align_forward(base_addr, align)
+        let pad as usize = aligned_addr - base_addr
+        let needed as usize = req_size + pad
+        (deref new_chunk).offset = needed
+        (deref self).total_allocated = (deref self).total_allocated + needed
+        return aligned_addr to ptr[u8]
+
+    public fn reset(self as ptr[ArenaAllocator]):
+        var curr as ptr[ArenaChunk] = (deref self).head
+        while curr != None to ptr[ArenaChunk]:
+            (deref curr).offset = 0 to usize
+            curr = (deref curr).next
+        (deref self).total_allocated = 0 to usize
+
+    public fn deinit(self as ptr[ArenaAllocator]):
+        let chunk_hdr_sz as usize = 32 to usize
+        var curr as ptr[ArenaChunk] = (deref self).head
+        while curr != None to ptr[ArenaChunk]:
+            let nxt as ptr[ArenaChunk] = (deref curr).next
+            let total_sz as usize = (deref curr).capacity + chunk_hdr_sz
+            if (deref self).backing != None to ptr[Allocator]:
+                (deref self).backing.free(curr to ptr[u8], total_sz)
+            else:
+                free(curr to ptr)
+            curr = nxt
+        (deref self).head = None to ptr[ArenaChunk]
+        (deref self).total_allocated = 0 to usize
+
+    public fn allocator(self as ptr[ArenaAllocator]) as Allocator:
+        return Allocator(ptr_alloc = arena_alloc_fn, ptr_resize = arena_resize_fn, ptr_free = arena_free_fn, context = self to ptr[u8])
+
+fn arena_alloc_fn(env as ptr, ctx as ptr[u8], req_size as usize, align as usize) as ptr[u8]:
+    let arena as ptr[ArenaAllocator] = ctx to ptr[ArenaAllocator]
+    return arena.alloc(req_size, align)
+
+fn arena_resize_fn(env as ptr, ctx as ptr[u8], old_ptr as ptr[u8], old_sz as usize, new_sz as usize) as ptr[u8]:
+    let arena as ptr[ArenaAllocator] = ctx to ptr[ArenaAllocator]
+    let new_ptr as ptr[u8] = arena.alloc(new_sz, 8 to usize)
+    if new_ptr != None to ptr[u8] and old_ptr != None to ptr[u8]:
+        var copy_sz as usize = old_sz
+        if new_sz < copy_sz:
+            copy_sz = new_sz
+        memcpy(new_ptr to ptr, old_ptr to ptr, copy_sz)
+    return new_ptr
+
+fn arena_free_fn(env as ptr, ctx as ptr[u8], ptr_val as ptr[u8], req_size as usize):
+    return
+
+// ── Fixed Buffer Allocator ────────────────────────────────────────────
+struct FixedBufferAllocator:
+    public var buffer as ptr[u8]
+    public var capacity as usize
+    public var offset as usize
+
+    public fn init(self as ptr[FixedBufferAllocator], buf as ptr[u8], cap as usize):
+        (deref self).buffer = buf
+        (deref self).capacity = cap
+        (deref self).offset = 0 to usize
+
+    public fn alloc(self as ptr[FixedBufferAllocator], req_size as usize, align as usize = 8 to usize) as ptr[u8]:
+        if (deref self).buffer == None to ptr[u8] or req_size == 0 to usize:
+            return None to ptr[u8]
+        let base_addr as usize = ((deref self).buffer to usize) + (deref self).offset
+        let aligned_addr as usize = align_forward(base_addr, align)
+        let pad as usize = aligned_addr - base_addr
+        let needed as usize = req_size + pad
+        if (deref self).offset + needed > (deref self).capacity:
+            return None to ptr[u8]
+        (deref self).offset = (deref self).offset + needed
+        return aligned_addr to ptr[u8]
+
+    public fn reset(self as ptr[FixedBufferAllocator]):
+        (deref self).offset = 0 to usize
+
+    public fn bytes_used(self as ptr[FixedBufferAllocator]) as usize:
+        return (deref self).offset
+
+    public fn bytes_free(self as ptr[FixedBufferAllocator]) as usize:
+        if (deref self).offset >= (deref self).capacity:
+            return 0 to usize
+        return (deref self).capacity - (deref self).offset
+
+    public fn allocator(self as ptr[FixedBufferAllocator]) as Allocator:
+        return Allocator(ptr_alloc = fixed_alloc_fn, ptr_resize = fixed_resize_fn, ptr_free = fixed_free_fn, context = self to ptr[u8])
+
+fn fixed_alloc_fn(env as ptr, ctx as ptr[u8], req_size as usize, align as usize) as ptr[u8]:
+    let fba as ptr[FixedBufferAllocator] = ctx to ptr[FixedBufferAllocator]
+    return fba.alloc(req_size, align)
+
+fn fixed_resize_fn(env as ptr, ctx as ptr[u8], old_ptr as ptr[u8], old_sz as usize, new_sz as usize) as ptr[u8]:
+    return None to ptr[u8]
+
+fn fixed_free_fn(env as ptr, ctx as ptr[u8], ptr_val as ptr[u8], req_size as usize):
+    return
+
+// ── Heap Allocator ────────────────────────────────────────────────────
+struct HeapAllocator:
+    public var dummy as usize
+
+    public fn alloc(self as ptr[HeapAllocator], req_size as usize, align as usize = 8 to usize) as ptr[u8]:
+        return heap_alloc_fn(None to ptr, self to ptr[u8], req_size, align)
+
+    public fn resize(self as ptr[HeapAllocator], old_ptr as ptr[u8], old_sz as usize, new_sz as usize) as ptr[u8]:
+        return heap_resize_fn(None to ptr, self to ptr[u8], old_ptr, old_sz, new_sz)
+
+    public fn free(self as ptr[HeapAllocator], ptr_val as ptr[u8], req_size as usize = 0 to usize):
+        heap_free_fn(None to ptr, self to ptr[u8], ptr_val, req_size)
+
+    public fn allocator(self as ptr[HeapAllocator]) as Allocator:
+        return Allocator(ptr_alloc = heap_alloc_fn, ptr_resize = heap_resize_fn, ptr_free = heap_free_fn, context = self to ptr[u8])
+
+fn heap_alloc_fn(env as ptr, ctx as ptr[u8], req_size as usize, align as usize) as ptr[u8]:
+    if req_size == 0 to usize:
+        return None to ptr[u8]
+    return malloc(req_size)
+
+fn heap_resize_fn(env as ptr, ctx as ptr[u8], old_ptr as ptr[u8], old_sz as usize, new_sz as usize) as ptr[u8]:
+    if new_sz == 0 to usize:
+        if old_ptr != None to ptr[u8]:
+            free(old_ptr to ptr)
+        return None to ptr[u8]
+    if old_ptr == None to ptr[u8]:
+        return malloc(new_sz)
+    return realloc(old_ptr to ptr, new_sz)
+
+fn heap_free_fn(env as ptr, ctx as ptr[u8], ptr_val as ptr[u8], req_size as usize):
+    if ptr_val != None to ptr[u8]:
+        free(ptr_val to ptr)
+
+fn get_heap_allocator() as Allocator:
+    return Allocator(ptr_alloc = heap_alloc_fn, ptr_resize = heap_resize_fn, ptr_free = heap_free_fn, context = None to ptr[u8])

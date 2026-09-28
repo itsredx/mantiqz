@@ -49,6 +49,7 @@
     #include <time.h>
     #include <sys/resource.h>
     #include <sys/wait.h>
+    #include <sys/mman.h>
 #endif
 
 #define sys_malloc malloc
@@ -227,6 +228,35 @@ void* mantiq_malloc_raw(int64_t size) {
         _alloc_bytes += (long long)(size ? size : 1);
     }
     return ptr;
+}
+
+// ── Virtual Page Allocation (POSIX mmap / Windows VirtualAlloc) ───────
+void* mantiq_page_alloc(int64_t size) {
+    if (size <= 0) return NULL;
+    size_t page_sz = 4096;
+    size_t aligned = ((size_t)size + page_sz - 1) & ~(page_sz - 1);
+#if defined(_WIN32)
+    return VirtualAlloc(NULL, aligned, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#elif defined(__wasi__)
+    return calloc(1, aligned);
+#else
+    void* ptr = mmap(NULL, aligned, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (ptr == MAP_FAILED) return NULL;
+    return ptr;
+#endif
+}
+
+void mantiq_page_free(void* ptr, int64_t size) {
+    if (!ptr || size <= 0) return;
+    size_t page_sz = 4096;
+    size_t aligned = ((size_t)size + page_sz - 1) & ~(page_sz - 1);
+#if defined(_WIN32)
+    VirtualFree(ptr, 0, MEM_RELEASE);
+#elif defined(__wasi__)
+    free(ptr);
+#else
+    munmap(ptr, aligned);
+#endif
 }
 
 // ── 32-Byte Slab Bump Allocator ───────────────────────────────────────
@@ -471,185 +501,6 @@ void mantiq_intern_destroy(void) {
     memset(g_intern_table, 0, sizeof(g_intern_table));
 }
 
-// ── Codegen Arena ─────────────────────────────────────────────────────────────
-static MantiqArena* g_codegen_arena = NULL;
-
-void* mantiq_codegen_alloc(size_t size) {
-    if (!g_codegen_arena) {
-        g_codegen_arena = mantiq_arena_create(262144); // 256 KB chunk size
-    }
-    void* ptr = mantiq_arena_alloc(g_codegen_arena, size);
-    if (!ptr) {
-        fprintf(stderr, "[Runtime] Fatal: out of memory in mantiq_codegen_alloc\n");
-        abort();
-    }
-    return ptr;
-}
-
-void mantiq_codegen_arena_reset(void) {
-    if (g_codegen_arena) {
-        mantiq_arena_reset(g_codegen_arena);
-    }
-}
-
-void mantiq_codegen_arena_destroy(void) {
-    if (g_codegen_arena) {
-        mantiq_arena_destroy(g_codegen_arena);
-        g_codegen_arena = NULL;
-    }
-}
-
-char* mantiq_codegen_temp(int32_t counter) {
-    char* buf = (char*)mantiq_codegen_alloc(24);
-    buf[0] = '%';
-    buf[1] = 't';
-    buf[2] = '.';
-    if (counter == 0) {
-        buf[3] = '0';
-        buf[4] = '\0';
-        return buf;
-    }
-    char tmp[16];
-    int i = 0;
-    int32_t n = counter;
-    if (n < 0) n = -n;
-    while (n > 0) {
-        tmp[i++] = (char)('0' + (n % 10));
-        n /= 10;
-    }
-    int j = 3;
-    while (i > 0) {
-        buf[j++] = tmp[--i];
-    }
-    buf[j] = '\0';
-    return buf;
-}
-
-char* mantiq_codegen_label(int32_t counter) {
-    char* buf = (char*)mantiq_codegen_alloc(24);
-    buf[0] = 'l';
-    buf[1] = 'a';
-    buf[2] = 'b';
-    buf[3] = 'e';
-    buf[4] = 'l';
-    buf[5] = '_';
-    if (counter == 0) {
-        buf[6] = '0';
-        buf[7] = '\0';
-        return buf;
-    }
-    char tmp[16];
-    int i = 0;
-    int32_t n = counter;
-    if (n < 0) n = -n;
-    while (n > 0) {
-        tmp[i++] = (char)('0' + (n % 10));
-        n /= 10;
-    }
-    int j = 6;
-    while (i > 0) {
-        buf[j++] = tmp[--i];
-    }
-    buf[j] = '\0';
-    return buf;
-}
-
-// ── Statement Temporary Tracker ───────────────────────────────────────────────
-typedef struct {
-    char** regs;
-    char** types;
-    uint8_t* consumed;
-    size_t count;
-    size_t capacity;
-} StatementTempTracker;
-
-static StatementTempTracker g_stmt_temps = {NULL, NULL, NULL, 0, 0};
-
-void mantiq_temp_tracker_push(const char* ssa_reg, const char* llvm_type) {
-    if (!ssa_reg || ssa_reg[0] == '\0') return;
-    if (g_stmt_temps.count >= g_stmt_temps.capacity) {
-        size_t new_cap = g_stmt_temps.capacity == 0 ? 16 : g_stmt_temps.capacity * 2;
-        char** new_regs = (char**)realloc(g_stmt_temps.regs, new_cap * sizeof(char*));
-        char** new_types = (char**)realloc(g_stmt_temps.types, new_cap * sizeof(char*));
-        uint8_t* new_consumed = (uint8_t*)realloc(g_stmt_temps.consumed, new_cap * sizeof(uint8_t));
-        if (!new_regs || !new_types || !new_consumed) {
-            fprintf(stderr, "[Runtime] Fatal: out of memory in mantiq_temp_tracker_push\n");
-            abort();
-        }
-        g_stmt_temps.regs = new_regs;
-        g_stmt_temps.types = new_types;
-        g_stmt_temps.consumed = new_consumed;
-        g_stmt_temps.capacity = new_cap;
-    }
-    size_t len = strlen(ssa_reg);
-    char* copy = (char*)mantiq_codegen_alloc(len + 1);
-    memcpy(copy, ssa_reg, len + 1);
-    g_stmt_temps.regs[g_stmt_temps.count] = copy;
-
-    const char* t_str = llvm_type ? llvm_type : "ptr";
-    size_t t_len = strlen(t_str);
-    char* t_copy = (char*)mantiq_codegen_alloc(t_len + 1);
-    memcpy(t_copy, t_str, t_len + 1);
-    g_stmt_temps.types[g_stmt_temps.count] = t_copy;
-
-    g_stmt_temps.consumed[g_stmt_temps.count] = 0;
-    g_stmt_temps.count++;
-}
-
-void mantiq_temp_tracker_consume(const char* ssa_reg) {
-    if (!ssa_reg || g_stmt_temps.count == 0) return;
-    for (size_t i = 0; i < g_stmt_temps.count; i++) {
-        if (!g_stmt_temps.consumed[i] && strcmp(g_stmt_temps.regs[i], ssa_reg) == 0) {
-            g_stmt_temps.consumed[i] = 1;
-            break;
-        }
-    }
-}
-
-int64_t mantiq_temp_tracker_count(void) {
-    int64_t unconsumed = 0;
-    for (size_t i = 0; i < g_stmt_temps.count; i++) {
-        if (!g_stmt_temps.consumed[i]) {
-            unconsumed++;
-        }
-    }
-    return unconsumed;
-}
-
-const char* mantiq_temp_tracker_get_unconsumed(int64_t target_idx) {
-    int64_t cur = 0;
-    for (size_t i = 0; i < g_stmt_temps.count; i++) {
-        if (!g_stmt_temps.consumed[i]) {
-            if (cur == target_idx) {
-                return g_stmt_temps.regs[i];
-            }
-            cur++;
-        }
-    }
-    return NULL;
-}
-
-const char* mantiq_temp_tracker_get_unconsumed_reg(int64_t target_idx) {
-    return mantiq_temp_tracker_get_unconsumed(target_idx);
-}
-
-const char* mantiq_temp_tracker_get_unconsumed_type(int64_t target_idx) {
-    int64_t cur = 0;
-    for (size_t i = 0; i < g_stmt_temps.count; i++) {
-        if (!g_stmt_temps.consumed[i]) {
-            if (cur == target_idx) {
-                return g_stmt_temps.types[i];
-            }
-            cur++;
-        }
-    }
-    return "ptr";
-}
-
-void mantiq_temp_tracker_clear(void) {
-    g_stmt_temps.count = 0;
-}
-
 // ── Drop Registry ─────────────────────────────────────────────────────────────
 typedef struct {
     char** names;
@@ -696,12 +547,17 @@ void mantiq_type_set_needs_drop(const char* type_name, int needs_drop) {
             g_drop_registry.capacity = new_cap;
         }
         size_t len = strlen(type_name);
-        char* copy = (char*)mantiq_codegen_alloc(len + 1);
+        char* copy = (char*)malloc(len + 1);
+        if (!copy) {
+            fprintf(stderr, "[Runtime] Fatal: out of memory in mantiq_type_set_needs_drop\n");
+            abort();
+        }
         memcpy(copy, type_name, len + 1);
         g_drop_registry.names[g_drop_registry.count++] = copy;
     } else {
         for (size_t i = 0; i < g_drop_registry.count; i++) {
             if (g_drop_registry.names[i] && strcmp(g_drop_registry.names[i], type_name) == 0) {
+                free(g_drop_registry.names[i]);
                 g_drop_registry.names[i] = g_drop_registry.names[g_drop_registry.count - 1];
                 g_drop_registry.count--;
                 break;
@@ -711,18 +567,17 @@ void mantiq_type_set_needs_drop(const char* type_name, int needs_drop) {
 }
 
 void mantiq_drop_registry_clear(void) {
+    for (size_t i = 0; i < g_drop_registry.count; i++) {
+        if (g_drop_registry.names[i]) free(g_drop_registry.names[i]);
+    }
+    free(g_drop_registry.names);
+    g_drop_registry.names = NULL;
     g_drop_registry.count = 0;
+    g_drop_registry.capacity = 0;
 }
 
 int mantiq_is_arena_ptr(void* ptr) {
     if (!ptr) return 0;
-    if (g_codegen_arena) {
-        MantiqArenaChunk* c = g_codegen_arena->first;
-        while (c) {
-            if ((char*)ptr >= c->data && (char*)ptr < c->data + c->capacity) return 1;
-            c = c->next;
-        }
-    }
     if (g_ast_arena) {
         MantiqArenaChunk* c = g_ast_arena->first;
         while (c) {
