@@ -2359,17 +2359,7 @@ pub const LLVMCodegen = struct {
                 const is_dict = obj_type.kind == .Dict or (obj_type.kind == .Struct and obj_type.struct_type != null and (std.mem.startsWith(u8, obj_type.struct_type.?.name, "Dict_") or std.mem.startsWith(u8, obj_type.struct_type.?.name, "mantiq_std_collections_Dict_") or std.mem.eql(u8, obj_type.struct_type.?.name, "Dict")));
 
                 if (is_list) {
-                    var inner_type = types.Type{ .kind = .Any };
-                    if (obj_type.payload) |p| {
-                        inner_type = p.*;
-                    } else if (obj_type.kind == .Struct and obj_type.struct_type != null) {
-                        const s_name = obj_type.struct_type.?.name;
-                        const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |pos| pos + 5 else null;
-                        if (prefix_idx) |pos| {
-                            const sub = s_name[pos..];
-                            inner_type = types.Type{ .kind = types.parseTypeString(sub) };
-                        }
-                    }
+                    const inner_type = types.collectionElementType(obj_type) orelse types.Type{ .kind = .Any };
                     const inner_llvm = typeToLLVM(self.allocator, inner_type);
                     const obj_llvm = typeToLLVM(self.allocator, obj_type);
                     
@@ -4633,17 +4623,7 @@ pub const LLVMCodegen = struct {
                 const is_dict = obj_type.kind == .Dict or (obj_type.kind == .Struct and obj_type.struct_type != null and (std.mem.startsWith(u8, obj_type.struct_type.?.name, "Dict_") or std.mem.startsWith(u8, obj_type.struct_type.?.name, "mantiq_std_collections_Dict_") or std.mem.eql(u8, obj_type.struct_type.?.name, "Dict")));
 
                 if (is_list) {
-                    var inner_type = types.Type{ .kind = .Any };
-                    if (obj_type.payload) |p| {
-                        inner_type = p.*;
-                    } else if (obj_type.kind == .Struct and obj_type.struct_type != null) {
-                        const s_name = obj_type.struct_type.?.name;
-                        const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |pos| pos + 5 else null;
-                        if (prefix_idx) |pos| {
-                            const sub = s_name[pos..];
-                            inner_type = types.Type{ .kind = types.parseTypeString(sub) };
-                        }
-                    }
+                    const inner_type = types.collectionElementType(obj_type) orelse types.Type{ .kind = .Any };
                     const inner_llvm = typeToLLVM(self.allocator, inner_type);
                     const obj_llvm = typeToLLVM(self.allocator, obj_type);
                     
@@ -5744,17 +5724,7 @@ pub const LLVMCodegen = struct {
                         return "null";
                     } else if (std.mem.eql(u8, m.method_name, "append")) {
                         const lval_addr = try self.genLValue(m.receiver);
-                        var elem_type = types.Type{ .kind = .Any };
-                        if (obj_inferred.payload) |p| {
-                            elem_type = p.*;
-                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
-                            const s_name = obj_inferred.struct_type.?.name;
-                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
-                            if (prefix_idx) |idx| {
-                                const sub = s_name[idx..];
-                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
-                            }
-                        }
+                        const elem_type = types.collectionElementType(obj_inferred) orelse types.Type{ .kind = .Any };
                         const elem_size = types.getTypeSize(elem_type);
                         var elem_val = try self.genExpr(m.arguments[0]);
                         const elem_inferred = m.arguments[0].inferred_type orelse types.Type{ .kind = .Any };
@@ -5769,33 +5739,13 @@ pub const LLVMCodegen = struct {
                     } else if (std.mem.eql(u8, m.method_name, "extend")) {
                         const lval_addr = try self.genLValue(m.receiver);
                         const arg_val = try self.genLValue(m.arguments[0]);
-                        var elem_type = types.Type{ .kind = .Any };
-                        if (obj_inferred.payload) |p| {
-                            elem_type = p.*;
-                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
-                            const s_name = obj_inferred.struct_type.?.name;
-                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
-                            if (prefix_idx) |idx| {
-                                const sub = s_name[idx..];
-                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
-                            }
-                        }
+                        const elem_type = types.collectionElementType(obj_inferred) orelse types.Type{ .kind = .Any };
                         const elem_size = types.getTypeSize(elem_type);
                         try writer.print("  call void @__nizam_list_extend(ptr {s}, ptr {s}, i64 {d})\n", .{ lval_addr, arg_val, elem_size });
                         return "null";
                     } else if (std.mem.eql(u8, m.method_name, "pop") or std.mem.eql(u8, m.method_name, "pop_index")) {
                         const lval_addr = try self.genLValue(m.receiver);
-                        var elem_type = types.Type{ .kind = .Any };
-                        if (obj_inferred.payload) |p| {
-                            elem_type = p.*;
-                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
-                            const s_name = obj_inferred.struct_type.?.name;
-                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
-                            if (prefix_idx) |idx| {
-                                const sub = s_name[idx..];
-                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
-                            }
-                        }
+                        const elem_type = types.collectionElementType(obj_inferred) orelse types.Type{ .kind = .Any };
                         const elem_size = types.getTypeSize(elem_type);
                         const elem_t_name = typeToLLVM(self.allocator, elem_type);
                         const out_ptr = self.nextTemp();
@@ -5814,17 +5764,7 @@ pub const LLVMCodegen = struct {
                         return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{res_val});
                     } else if (std.mem.eql(u8, m.method_name, "insert")) {
                         const lval_addr = try self.genLValue(m.receiver);
-                        var elem_type = types.Type{ .kind = .Any };
-                        if (obj_inferred.payload) |p| {
-                            elem_type = p.*;
-                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
-                            const s_name = obj_inferred.struct_type.?.name;
-                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
-                            if (prefix_idx) |idx| {
-                                const sub = s_name[idx..];
-                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
-                            }
-                        }
+                        const elem_type = types.collectionElementType(obj_inferred) orelse types.Type{ .kind = .Any };
                         const elem_size = types.getTypeSize(elem_type);
                         const elem_t_name = typeToLLVM(self.allocator, elem_type);
                         var idx_val = try self.genExpr(m.arguments[0]);
@@ -5842,17 +5782,7 @@ pub const LLVMCodegen = struct {
                         return "null";
                     } else if (std.mem.eql(u8, m.method_name, "remove")) {
                         const lval_addr = try self.genLValue(m.receiver);
-                        var elem_type = types.Type{ .kind = .Any };
-                        if (obj_inferred.payload) |p| {
-                            elem_type = p.*;
-                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
-                            const s_name = obj_inferred.struct_type.?.name;
-                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
-                            if (prefix_idx) |idx| {
-                                const sub = s_name[idx..];
-                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
-                            }
-                        }
+                        const elem_type = types.collectionElementType(obj_inferred) orelse types.Type{ .kind = .Any };
                         const elem_size = types.getTypeSize(elem_type);
                         const elem_t_name = typeToLLVM(self.allocator, elem_type);
                         var elem_val = try self.genExpr(m.arguments[0]);
@@ -5867,17 +5797,7 @@ pub const LLVMCodegen = struct {
                         return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{r_val});
                     } else if (std.mem.eql(u8, m.method_name, "reverse")) {
                         const lval_addr = try self.genLValue(m.receiver);
-                        var elem_type = types.Type{ .kind = .Any };
-                        if (obj_inferred.payload) |p| {
-                            elem_type = p.*;
-                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
-                            const s_name = obj_inferred.struct_type.?.name;
-                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
-                            if (prefix_idx) |idx| {
-                                const sub = s_name[idx..];
-                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
-                            }
-                        }
+                        const elem_type = types.collectionElementType(obj_inferred) orelse types.Type{ .kind = .Any };
                         const elem_size = types.getTypeSize(elem_type);
                         try writer.print("  call void @__nizam_list_reverse(ptr {s}, i64 {d})\n", .{ lval_addr, elem_size });
                         return "null";
@@ -5889,17 +5809,7 @@ pub const LLVMCodegen = struct {
                         const idx_inferred = m.arguments[0].inferred_type orelse types.Type{ .kind = .I64 };
                         const idx_source_t = typeToLLVM(self.allocator, idx_inferred);
                         idx_val = try self.coerceType(idx_val, idx_source_t, "i64");
-                        var elem_type = types.Type{ .kind = .Any };
-                        if (obj_inferred.payload) |p| {
-                            elem_type = p.*;
-                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
-                            const s_name = obj_inferred.struct_type.?.name;
-                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
-                            if (prefix_idx) |idx| {
-                                const sub = s_name[idx..];
-                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
-                            }
-                        }
+                        const elem_type = types.collectionElementType(obj_inferred) orelse types.Type{ .kind = .Any };
                         const elem_t_name = typeToLLVM(self.allocator, elem_type);
                         const gep_temp = self.nextTemp();
                         try writer.print("  %t.{d} = getelementptr {s}, ptr %t.{d}, i64 {s}\n", .{ gep_temp, elem_t_name, ptr_temp, idx_val });

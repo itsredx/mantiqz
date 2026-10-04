@@ -484,6 +484,13 @@ pub const TypeChecker = struct {
         self.is_string_imported = old_str;
 
         if (self.struct_types.get(mangled_name)) |st| {
+            // Record the concrete type arguments so the element type of a
+            // monomorphized collection can be recovered structurally later.
+            if (st.generic_args == null and type_args.len > 0) {
+                const args_copy = try self.allocator.alloc(types.Type, type_args.len);
+                @memcpy(args_copy, type_args);
+                st.generic_args = args_copy;
+            }
             return st;
         }
         return error.TypeMismatch;
@@ -2709,14 +2716,8 @@ pub const TypeChecker = struct {
                                 found = true;
                             } else if (std.mem.eql(u8, m.method_name, "pop") or std.mem.eql(u8, m.method_name, "pop_index") or std.mem.eql(u8, m.method_name, "get")) {
                                 var elem_t = types.Type{ .kind = .Any };
-                                if (rec_type.payload) |p| {
-                                    elem_t = p.*;
-                                } else {
-                                    const prefix_idx = if (std.mem.lastIndexOf(u8, name, "List_")) |idx| idx + 5 else null;
-                                    if (prefix_idx) |idx| {
-                                        const sub = name[idx..];
-                                        elem_t = types.Type{ .kind = types.parseTypeString(sub) };
-                                    }
+                                if (types.collectionElementType(rec_type)) |et| {
+                                    elem_t = et;
                                 }
                                 node.inferred_type = elem_t;
                                 found = true;
@@ -3000,12 +3001,9 @@ pub const TypeChecker = struct {
                 const is_list_comp = iter_t.kind == .List or (iter_t.kind == .Struct and iter_t.struct_type != null and (std.mem.startsWith(u8, iter_t.struct_type.?.name, "List_") or std.mem.startsWith(u8, iter_t.struct_type.?.name, "mantiq_std_collections_List_") or std.mem.eql(u8, iter_t.struct_type.?.name, "List")));
                 if (is_list_comp and iter_t.payload != null) {
                     elem_type = iter_t.payload.?.*;
-                } else if (is_list_comp and iter_t.kind == .Struct and iter_t.struct_type != null) {
-                    const s_name = iter_t.struct_type.?.name;
-                    const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
-                    if (prefix_idx) |idx| {
-                        const sub = s_name[idx..];
-                        elem_type = types.Type{ .kind = types.parseTypeString(sub) };
+                } else if (is_list_comp) {
+                    if (types.collectionElementType(iter_t)) |et| {
+                        elem_type = et;
                     }
                 } else if (iter_t.kind == .Slice and iter_t.payload != null) {
                     elem_type = iter_t.payload.?.*;
@@ -3102,14 +3100,7 @@ pub const TypeChecker = struct {
                     } else if (resolved_obj_type.payload) |p| {
                         node.inferred_type = p.*;
                     } else if (is_list_struct) {
-                        const s_name = resolved_obj_type.struct_type.?.name;
-                        const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |pos| pos + 5 else null;
-                        if (prefix_idx) |pos| {
-                            const sub = s_name[pos..];
-                            node.inferred_type = types.Type{ .kind = types.parseTypeString(sub) };
-                        } else {
-                            node.inferred_type = types.Type{ .kind = .Any };
-                        }
+                        node.inferred_type = types.collectionElementType(resolved_obj_type) orelse types.Type{ .kind = .Any };
                     } else {
                         node.inferred_type = types.Type{ .kind = .Any };
                     }

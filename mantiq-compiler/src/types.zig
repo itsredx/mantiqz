@@ -100,6 +100,11 @@ pub const StructType = struct {
     name: []const u8,
     fields: []StructField,
     methods: []StructMethod = &[_]StructMethod{},
+    /// Concrete type arguments for a monomorphized generic struct (e.g. the
+    /// `i64` in `List_i64`). Recorded so element types can be recovered
+    /// structurally instead of by re-parsing the mangled name, which cannot
+    /// express struct or container payloads.
+    generic_args: ?[]const Type = null,
 };
 
 pub const UnionType = struct {
@@ -417,6 +422,38 @@ pub fn builtinTypeNameSize(name: []const u8) ?usize {
         std.mem.eql(u8, name, "Dict") or std.mem.eql(u8, name, "Set") or
         std.mem.eql(u8, name, "FrozenSet") or std.mem.eql(u8, name, "Bytes") or
         std.mem.eql(u8, name, "Tuple") or std.mem.eql(u8, name, "Tuple__")) return 24;
+    return null;
+}
+
+/// Returns true if `name` looks like a monomorphized `List`/`Set`/`FrozenSet`
+/// struct, i.e. a generic collection whose element type must be recovered from
+/// its recorded type arguments.
+pub fn isListLikeStructName(name: []const u8) bool {
+    return std.mem.startsWith(u8, name, "List_") or
+        std.mem.startsWith(u8, name, "mantiq_std_collections_List_") or
+        std.mem.startsWith(u8, name, "Set_") or
+        std.mem.startsWith(u8, name, "mantiq_std_collections_Set_") or
+        std.mem.startsWith(u8, name, "FrozenSet_") or
+        std.mem.startsWith(u8, name, "mantiq_std_collections_FrozenSet_") or
+        std.mem.eql(u8, name, "List") or
+        std.mem.eql(u8, name, "Set") or
+        std.mem.eql(u8, name, "FrozenSet");
+}
+
+/// Recovers the element type of a collection type. Prefers the structurally
+/// recorded payload, then the monomorphized struct's recorded type arguments.
+/// Re-parsing a mangled name cannot represent struct or container payloads, so
+/// that fallback is deliberately absent: callers that cannot determine an
+/// element type should fall back to Any rather than silently producing u8.
+pub fn collectionElementType(t: Type) ?Type {
+    if (t.payload) |p| return p.*;
+    if (t.kind == .Struct) {
+        if (t.struct_type) |st| {
+            if (st.generic_args) |args| {
+                if (args.len > 0) return args[0];
+            }
+        }
+    }
     return null;
 }
 
