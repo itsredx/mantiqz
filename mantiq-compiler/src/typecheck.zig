@@ -3060,7 +3060,11 @@ pub const TypeChecker = struct {
                 }
                 const is_class = resolved_obj_type.kind == .Class and resolved_obj_type.class_type != null;
                 const is_struct = resolved_obj_type.kind == .Struct and resolved_obj_type.struct_type != null;
-                if (is_class or is_struct) {
+                // A subscript on a raw pointer yields the pointee type. resolved_obj_type is the
+                // unwrapped payload here, so looking for __getitem__ on it would wrongly desugar
+                // ptr[T][i] into T.__getitem__(i) and yield the pointee's element type instead.
+                const is_pointer_subscript = obj_type.kind == .RawPointer;
+                if ((is_class or is_struct) and !is_pointer_subscript) {
                     const methods = if (is_class) resolved_obj_type.class_type.?.methods else resolved_obj_type.struct_type.?.methods;
                     var has_getitem = false;
                     var return_t: types.Type = .{ .kind = .Unknown };
