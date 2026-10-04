@@ -700,6 +700,16 @@ pub const TypeChecker = struct {
                 node.inferred_type = last_type;
             },
             .CallExpr => |*c| {
+                // Type intrinsics take a *type* argument and fold to a compile-time
+                // integer constant, so the callee is never a value symbol and the
+                // argument is not an expression to check. Infer i64 and stop here;
+                // codegen substitutes the literal size.
+                if (c.callee.node_type == .Identifier and
+                    types.isTypeIntrinsicName(c.callee.data.Identifier.name))
+                {
+                    node.inferred_type = .{ .kind = .I64 };
+                    return;
+                }
                 try self.checkNode(c.callee);
                 
                 var is_builtin = false;

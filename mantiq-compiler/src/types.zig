@@ -377,6 +377,49 @@ pub fn formatType(t: Type) []const u8 {
     };
 }
 
+/// Returns true if `name` denotes a compile-time type intrinsic rather than a
+/// runtime function. Intrinsics take a *type* as their argument, so they are
+/// resolved entirely by the code generator and are never bound as symbols.
+pub fn isTypeIntrinsicName(name: []const u8) bool {
+    return isTypeSizeIntrinsicName(name) or isTypeAlignIntrinsicName(name);
+}
+
+pub fn isTypeSizeIntrinsicName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "size") or
+        std.mem.eql(u8, name, "size_of") or
+        std.mem.eql(u8, name, "sizeof");
+}
+
+pub fn isTypeAlignIntrinsicName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "alignof") or
+        std.mem.eql(u8, name, "align_of");
+}
+
+/// Maps a builtin type name to its size in bytes on the x86-64 Linux target,
+/// mirroring the layout the code generator emits. Returns null for names that
+/// are not builtin scalars, raw pointers, or the fixed-layout collection
+/// handles. Used to fold `sizeof(T)` inside generic std code at compile time.
+pub fn builtinTypeNameSize(name: []const u8) ?usize {
+    if (std.mem.eql(u8, name, "i8") or std.mem.eql(u8, name, "u8") or
+        std.mem.eql(u8, name, "bool") or std.mem.eql(u8, name, "char")) return 1;
+    if (std.mem.eql(u8, name, "i16") or std.mem.eql(u8, name, "u16") or
+        std.mem.eql(u8, name, "f16") or std.mem.eql(u8, name, "bf16")) return 2;
+    if (std.mem.eql(u8, name, "i32") or std.mem.eql(u8, name, "u32") or
+        std.mem.eql(u8, name, "f32")) return 4;
+    if (std.mem.eql(u8, name, "i64") or std.mem.eql(u8, name, "u64") or
+        std.mem.eql(u8, name, "f64") or std.mem.eql(u8, name, "usize") or
+        std.mem.eql(u8, name, "isize")) return 8;
+    if (std.mem.eql(u8, name, "i128") or std.mem.eql(u8, name, "u128") or
+        std.mem.eql(u8, name, "f128")) return 16;
+    if (std.mem.eql(u8, name, "ptr") or std.mem.eql(u8, name, "cstr")) return 8;
+    // Fixed-layout handles laid out as { ptr, i64, i64 }.
+    if (std.mem.eql(u8, name, "String") or std.mem.eql(u8, name, "List") or
+        std.mem.eql(u8, name, "Dict") or std.mem.eql(u8, name, "Set") or
+        std.mem.eql(u8, name, "FrozenSet") or std.mem.eql(u8, name, "Bytes") or
+        std.mem.eql(u8, name, "Tuple") or std.mem.eql(u8, name, "Tuple__")) return 24;
+    return null;
+}
+
 pub fn getTypeSize(t: Type) usize {
     return layout.getSize(t, layout.Target.x86_64_linux);
 }

@@ -21,6 +21,7 @@ const symbols = @import("symbols.zig");
 const parser = @import("parser.zig");
 const lower = @import("lower.zig");
 const typecheck = @import("typecheck.zig");
+const types = @import("types.zig");
 
 fn isSymbolImported(imported_symbols: []const []const u8, name: []const u8) bool {
     if (imported_symbols.len == 0) return true;
@@ -811,6 +812,16 @@ pub const SemanticAnalyzer = struct {
                 try self.resolvePass2(u.operand);
             },
             .CallExpr => |*c| {
+                // Type intrinsics (sizeof/size/size_of/alignof/align_of) take a *type*
+                // as their argument rather than an expression. Neither the callee name
+                // nor the argument names live in the value namespace, so resolving them
+                // would raise spurious "Undefined identifier" errors. The whole call is
+                // left unresolved here; codegen folds it to a constant instead.
+                if (c.callee.node_type == .Identifier and
+                    types.isTypeIntrinsicName(c.callee.data.Identifier.name))
+                {
+                    return;
+                }
                 try self.resolvePass2(c.callee);
                 for (c.arguments) |arg| {
                     try self.resolvePass2(arg);

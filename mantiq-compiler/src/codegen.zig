@@ -2798,6 +2798,57 @@ pub const LLVMCodegen = struct {
         }
     }
 
+    /// Computes the size in bytes of the type denoted by `node`, used to fold
+    /// `sizeof(T)` inside generic code. Handles bare builtin type names and
+    /// parameterised forms such as `ptr[T]` and `List[T]`. Falls back to the
+    /// pointer size when the name is not a recognised builtin.
+    fn typeNodeSize(self: *LLVMCodegen, node: *ast.Node) usize {
+        _ = self;
+        if (node.node_type == .Identifier) {
+            const name = node.data.Identifier.name;
+            return types.builtinTypeNameSize(name) orelse 8;
+        }
+        if (node.node_type == .IndexExpr) {
+            const obj = node.data.IndexExpr.object;
+            const base_name: ?[]const u8 = if (obj.node_type == .Identifier)
+                obj.data.Identifier.name
+            else
+                null;
+            if (base_name) |bn| {
+                // ptr[T] is a single machine word regardless of T.
+                if (std.mem.eql(u8, bn, "ptr")) return 8;
+                // List/Dict/Set/String/... are all { ptr, i64, i64 } handles.
+                if (types.builtinTypeNameSize(bn)) |sz| return sz;
+            }
+        }
+        // Fall back to whatever the typechecker inferred for the node.
+        if (node.inferred_type) |t| {
+            const sz = types.getTypeSize(t);
+            if (sz > 0) return sz;
+        }
+        return 8;
+    }
+
+    /// If `c` is a call to a compile-time type intrinsic, folds it to an integer
+    /// literal and returns it. Otherwise returns null so normal call emission
+    /// proceeds.
+    fn evalTypeIntrinsic(self: *LLVMCodegen, c: *ast.Node) ?[]const u8 {
+        if (c.node_type != .CallExpr) return null;
+        const ce = &c.data.CallExpr;
+        if (ce.callee.node_type != .Identifier) return null;
+        const fname = ce.callee.data.Identifier.name;
+        if (!types.isTypeIntrinsicName(fname)) return null;
+        if (ce.arguments.len == 0) return null;
+
+        const arg = ce.arguments[0];
+        const value: usize = if (types.isTypeAlignIntrinsicName(fname)) blk: {
+            const t = if (arg.inferred_type) |it| it else types.Type{ .kind = .Any };
+            break :blk types.getTypeAlignment(t);
+        } else self.typeNodeSize(arg);
+
+        return std.fmt.allocPrint(self.allocator, "{d}", .{value}) catch null;
+    }
+
     fn genExpr(self: *LLVMCodegen, node: *ast.Node) CodegenError![]const u8 {
         @setEvalBranchQuota(50000);
         const writer = self.out.writer();
@@ -3488,6 +3539,10 @@ pub const LLVMCodegen = struct {
                 return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat_temp2});
             },
             .CallExpr => |*c| {
+                // sizeof/size/size_of/alignof/align_of fold to a compile-time
+                // constant, so they never reach the normal call-emission path.
+                if (self.evalTypeIntrinsic(node)) |folded| return folded;
+
                 const is_variable = if (c.callee.node_type == .Identifier)
                     (if (c.callee.data.Identifier.resolved_symbol) |sym| sym.kind == .Variable else false)
                 else
