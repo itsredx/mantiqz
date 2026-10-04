@@ -96,6 +96,7 @@ pub const LLVMCodegen = struct {
     defined_types: std.StringHashMap(bool),
     declared_types: std.StringHashMap(bool),
     external_decls: std.StringHashMap(bool),
+    emitted_functions: std.StringHashMap(bool),
 
     pub fn init(allocator: std.mem.Allocator, global_vars: *std.StringHashMap([]const u8)) LLVMCodegen {
         return .{
@@ -120,6 +121,7 @@ pub const LLVMCodegen = struct {
             .defined_types = std.StringHashMap(bool).init(allocator),
             .declared_types = std.StringHashMap(bool).init(allocator),
             .external_decls = std.StringHashMap(bool).init(allocator),
+            .emitted_functions = std.StringHashMap(bool).init(allocator),
         };
     }
 
@@ -285,6 +287,46 @@ pub const LLVMCodegen = struct {
             return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{ptr_ext});
         }
 
+        // 3c. Convert between 3-field slice representations: { ptr, i64, i64 } and named List/Dict/String structs
+        const src_is_triple = std.mem.eql(u8, source_type, "{ ptr, i64, i64 }") or
+            (std.mem.startsWith(u8, source_type, "%") and (std.mem.indexOf(u8, source_type, "List") != null or std.mem.indexOf(u8, source_type, "Dict") != null or std.mem.indexOf(u8, source_type, "String") != null));
+        const tgt_is_triple = std.mem.eql(u8, target_type, "{ ptr, i64, i64 }") or
+            (std.mem.startsWith(u8, target_type, "%") and (std.mem.indexOf(u8, target_type, "List") != null or std.mem.indexOf(u8, target_type, "Dict") != null or std.mem.indexOf(u8, target_type, "String") != null));
+
+        if (src_is_triple and tgt_is_triple) {
+            if (std.mem.eql(u8, val, "zeroinitializer")) {
+                return "zeroinitializer";
+            }
+            const ptr_ext = self.nextTemp();
+            try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_ext, source_type, val });
+            const len_ext = self.nextTemp();
+            try writer.print("  %t.{d} = extractvalue {s} {s}, 1\n", .{ len_ext, source_type, val });
+            const cap_ext = self.nextTemp();
+            try writer.print("  %t.{d} = extractvalue {s} {s}, 2\n", .{ cap_ext, source_type, val });
+            
+            const fat1 = self.nextTemp();
+            try writer.print("  %t.{d} = insertvalue {s} undef, ptr %t.{d}, 0\n", .{ fat1, target_type, ptr_ext });
+            const fat2 = self.nextTemp();
+            try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 %t.{d}, 1\n", .{ fat2, target_type, fat1, len_ext });
+            const fat3 = self.nextTemp();
+            try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 %t.{d}, 2\n", .{ fat3, target_type, fat2, cap_ext });
+            return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat3});
+        }
+
+        // 3d. Convert cstr (ptr) to string representation { ptr, i64, i64 }
+        if (std.mem.eql(u8, source_type, "ptr") and
+            (std.mem.eql(u8, target_type, "{ ptr, i64, i64 }") or (std.mem.startsWith(u8, target_type, "%") and std.mem.endsWith(u8, target_type, "String")))) {
+            const len_temp = self.nextTemp();
+            try writer.print("  %t.{d} = call i64 @strlen(ptr {s})\n", .{ len_temp, val });
+            const fat1 = self.nextTemp();
+            try writer.print("  %t.{d} = insertvalue {s} undef, ptr {s}, 0\n", .{ fat1, target_type, val });
+            const fat2 = self.nextTemp();
+            try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 %t.{d}, 1\n", .{ fat2, target_type, fat1, len_temp });
+            const fat3 = self.nextTemp();
+            try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 %t.{d}, 2\n", .{ fat3, target_type, fat2, len_temp });
+            return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat3});
+        }
+
         // 4. Integer to Integer sizing (zext / trunc)
         if (std.mem.startsWith(u8, source_type, "i") and std.mem.startsWith(u8, target_type, "i")) {
             const arg_bits = std.fmt.parseInt(u32, source_type[1..], 10) catch 32;
@@ -333,7 +375,7 @@ pub const LLVMCodegen = struct {
         }
 
         // 7. Dynamic list { ptr, i64, i64 } to static array [N x T]
-        if (std.mem.eql(u8, source_type, "{ ptr, i64, i64 }") and std.mem.startsWith(u8, target_type, "[")) {
+        if ((std.mem.eql(u8, source_type, "{ ptr, i64, i64 }") or (std.mem.startsWith(u8, source_type, "%") and std.mem.indexOf(u8, source_type, "List") != null)) and std.mem.startsWith(u8, target_type, "[")) {
             const x_pos = std.mem.indexOf(u8, target_type, " x ") orelse return val;
             const close_bracket = std.mem.indexOfScalar(u8, target_type, ']') orelse return val;
             const num_str = target_type[1..x_pos];
@@ -341,7 +383,7 @@ pub const LLVMCodegen = struct {
             const n = std.fmt.parseInt(usize, num_str, 10) catch return val;
 
             const ptr_temp = self.nextTemp();
-            try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ ptr_temp, val });
+            try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, source_type, val });
 
             var result = try std.fmt.allocPrint(self.allocator, "undef", .{});
             for (0..n) |j| {
@@ -395,6 +437,7 @@ pub const LLVMCodegen = struct {
         self.defined_types.clearRetainingCapacity();
         self.declared_types.clearRetainingCapacity();
         self.external_decls.clearRetainingCapacity();
+        self.emitted_functions.clearRetainingCapacity();
 
         try self.collectDefinedFunctions(root);
         try self.collectDefinedTypes(root);
@@ -499,6 +542,13 @@ pub const LLVMCodegen = struct {
         try preamble.writer().print("declare ptr @__mantiq_dict_get_or_insert(ptr, ptr, i32)\n", .{});
         try preamble.writer().print("declare void @__mantiq_list_append(ptr, ptr, i64)\n", .{});
         try preamble.writer().print("declare void @__mantiq_list_extend(ptr, ptr, i64)\n", .{});
+        try preamble.writer().print("declare void @__nizam_list_append(ptr, ptr, i64)\n", .{});
+        try preamble.writer().print("declare void @__nizam_list_extend(ptr, ptr, i64)\n", .{});
+        try preamble.writer().print("declare i8 @__nizam_list_pop(ptr, ptr, i64)\n", .{});
+        try preamble.writer().print("declare i8 @__nizam_list_pop_index(ptr, i64, ptr, i64)\n", .{});
+        try preamble.writer().print("declare void @__nizam_list_insert(ptr, i64, ptr, i64)\n", .{});
+        try preamble.writer().print("declare i8 @__nizam_list_remove(ptr, ptr, i64)\n", .{});
+        try preamble.writer().print("declare void @__nizam_list_reverse(ptr, i64)\n", .{});
         try preamble.writer().print("declare void @__mantiq_dict_clear(ptr)\n", .{});
         try preamble.writer().print("declare void @__mantiq_dict_merge(ptr, ptr)\n", .{});
         try preamble.writer().print("declare ptr @mantiq_concat_str(ptr, i64, ptr, i64)\n", .{});
@@ -964,7 +1014,9 @@ pub const LLVMCodegen = struct {
             return true;
         }
         if (t.kind == .Struct and t.struct_type != null) {
-            return std.mem.endsWith(u8, t.struct_type.?.name, "String");
+            const s_name = t.struct_type.?.name;
+            if (std.mem.startsWith(u8, s_name, "List_") or std.mem.startsWith(u8, s_name, "mantiq_std_collections_List_") or std.mem.startsWith(u8, s_name, "Dict_") or std.mem.startsWith(u8, s_name, "mantiq_std_collections_Dict_")) return false;
+            return std.mem.endsWith(u8, s_name, "String");
         }
         return false;
     }
@@ -976,8 +1028,10 @@ pub const LLVMCodegen = struct {
         if (t.kind == .String) {
             return 2;
         }
-        if (t.kind == .Struct and t.struct_type != null and std.mem.endsWith(u8, t.struct_type.?.name, "String")) {
-            return 2;
+        if (t.kind == .Struct and t.struct_type != null) {
+            const s_name = t.struct_type.?.name;
+            if (std.mem.startsWith(u8, s_name, "List_") or std.mem.startsWith(u8, s_name, "mantiq_std_collections_List_") or std.mem.startsWith(u8, s_name, "Dict_") or std.mem.startsWith(u8, s_name, "mantiq_std_collections_Dict_")) return 0;
+            if (std.mem.endsWith(u8, s_name, "String")) return 2;
         }
         return 0;
     }
@@ -1382,6 +1436,9 @@ pub const LLVMCodegen = struct {
                         return;
                     }
                     
+                    if (self.emitted_functions.contains(func_symbol_name)) return;
+                    try self.emitted_functions.put(func_symbol_name, true);
+                    
                     const inline_attr = if (f.is_inline) " alwaysinline" else "";
                     try writer.print("define {s} @{s}({s}){s} {{\n", .{ final_ret_t, func_symbol_name, param_str.items, inline_attr });
                     try writer.print("entry:\n", .{});
@@ -1455,6 +1512,8 @@ pub const LLVMCodegen = struct {
             },
             .ClassDecl => |*c| {
                 const ct = node.inferred_type.?.class_type.?;
+                if (self.declared_types.contains(ct.name)) return;
+                try self.declared_types.put(ct.name, true);
                 var fields_str = std.ArrayList(u8).init(self.allocator);
                 try fields_str.appendSlice("ptr"); // vtable pointer
                 
@@ -1512,6 +1571,8 @@ pub const LLVMCodegen = struct {
             .StructDecl => |*s| {
                 if (s.generic_params != null) return;
                 const st = node.inferred_type.?.struct_type.?;
+                if (self.declared_types.contains(st.name)) return;
+                try self.declared_types.put(st.name, true);
                 var fields_str = std.ArrayList(u8).init(self.allocator);
                 for (st.fields, 0..) |sf, i| {
                     if (i > 0) try fields_str.appendSlice(", ");
@@ -1527,25 +1588,27 @@ pub const LLVMCodegen = struct {
                 if (u.generic_params != null) return;
                 const ut_type = node.inferred_type.?;
                 const ut = ut_type.union_type.?;
+                if (self.declared_types.contains(ut.name)) return;
+                try self.declared_types.put(ut.name, true);
                 if (ut.tag_type) |tag_t| {
-                    var max_size: usize = 0;
-                    for (ut.fields) |f| {
-                        const field_size = types.getTypeSize(f.type_kind);
-                        if (field_size > max_size) max_size = field_size;
+                        var max_size: usize = 0;
+                        for (ut.fields) |f| {
+                            const field_size = types.getTypeSize(f.type_kind);
+                            if (field_size > max_size) max_size = field_size;
+                        }
+                        var max_align: usize = 1;
+                        for (ut.fields) |f| {
+                            const field_align = types.getTypeAlignment(f.type_kind);
+                            if (field_align > max_align) max_align = field_align;
+                        }
+                        const padding = (max_align - (max_size % max_align)) % max_align;
+                        const payload_size = max_size + padding;
+                        const tag_t_llvm = typeToLLVM(self.allocator, tag_t);
+                        try self.type_out.writer().print("%{s} = type {{ {s}, [{d} x i8] }}\n\n", .{ ut.name, tag_t_llvm, payload_size });
+                    } else {
+                        const size = types.getTypeSize(ut_type);
+                        try self.type_out.writer().print("%{s} = type {{ [{d} x i8] }}\n\n", .{ ut.name, size });
                     }
-                    var max_align: usize = 1;
-                    for (ut.fields) |f| {
-                        const field_align = types.getTypeAlignment(f.type_kind);
-                        if (field_align > max_align) max_align = field_align;
-                    }
-                    const padding = (max_align - (max_size % max_align)) % max_align;
-                    const payload_size = max_size + padding;
-                    const tag_t_llvm = typeToLLVM(self.allocator, tag_t);
-                    try self.type_out.writer().print("%{s} = type {{ {s}, [{d} x i8] }}\n\n", .{ ut.name, tag_t_llvm, payload_size });
-                } else {
-                    const size = types.getTypeSize(ut_type);
-                    try self.type_out.writer().print("%{s} = type {{ [{d} x i8] }}\n\n", .{ ut.name, size });
-                }
 
                 for (u.methods) |method| {
                     try self.genNode(method);
@@ -1553,9 +1616,12 @@ pub const LLVMCodegen = struct {
             },
             .EnumDecl => {
                 const et = node.inferred_type.?.enum_type.?;
-                // For a Rust-style Enum, we use a tagged union: { i32, [4 x i64] }
-                // This gives 32 bytes of inline payload storage.
-                try self.type_out.writer().print("%{s} = type {{ i32, [4 x i64] }}\n\n", .{et.name});
+                if (!self.declared_types.contains(et.name)) {
+                    try self.declared_types.put(et.name, true);
+                    // For a Rust-style Enum, we use a tagged union: { i32, [4 x i64] }
+                    // This gives 32 bytes of inline payload storage.
+                    try self.type_out.writer().print("%{s} = type {{ i32, [4 x i64] }}\n\n", .{et.name});
+                }
             },
             .EnumVariant => {
                 // Handled via MemberExpr / CallExpr
@@ -1813,10 +1879,12 @@ pub const LLVMCodegen = struct {
                         end_val = try self.genExpr(f.iterable.data.BinaryExpr.right);
                     } else {
                         iter_val = try self.genExpr(f.iterable);
-                        if (f.iterable.inferred_type != null and f.iterable.inferred_type.?.kind == .List) {
+                        const is_list_iter = f.iterable.inferred_type != null and (f.iterable.inferred_type.?.kind == .List or (f.iterable.inferred_type.?.kind == .Struct and f.iterable.inferred_type.?.struct_type != null and (std.mem.startsWith(u8, f.iterable.inferred_type.?.struct_type.?.name, "List_") or std.mem.startsWith(u8, f.iterable.inferred_type.?.struct_type.?.name, "mantiq_std_collections_List_") or std.mem.eql(u8, f.iterable.inferred_type.?.struct_type.?.name, "List"))));
+                        if (is_list_iter) {
                             is_list = true;
+                            const iter_llvm = typeToLLVM(self.allocator, f.iterable.inferred_type.?);
                             const len_temp = self.nextTemp();
-                            try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 1\n", .{ len_temp, iter_val });
+                            try writer.print("  %t.{d} = extractvalue {s} {s}, 1\n", .{ len_temp, iter_llvm, iter_val });
                             end_val = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{len_temp});
                         }
                     }
@@ -1856,7 +1924,8 @@ pub const LLVMCodegen = struct {
                         const buf_temp = self.nextTemp();
                         const gep_temp = self.nextTemp();
                         const elem_temp = self.nextTemp();
-                        try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ buf_temp, iter_val });
+                        const iter_llvm = typeToLLVM(self.allocator, f.iterable.inferred_type.?);
+                        try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ buf_temp, iter_llvm, iter_val });
                         try writer.print("  %t.{d} = getelementptr inbounds {s}, ptr %t.{d}, i64 %t.{d}\n", .{ gep_temp, t, buf_temp, val });
                         try writer.print("  %t.{d} = load {s}, ptr %t.{d}\n", .{ elem_temp, t, gep_temp });
                         try writer.print("  store {s} %t.{d}, ptr %{s}\n", .{ t, elem_temp, f.iterator });
@@ -2286,36 +2355,32 @@ pub const LLVMCodegen = struct {
                 const index_llvm = typeToLLVM(self.allocator, index_t);
                 const index_i64 = try self.coerceType(index_val, index_llvm, "i64");
 
-                if (obj_type.kind == .List) {
+                const is_list = obj_type.kind == .List or (obj_type.kind == .Struct and obj_type.struct_type != null and (std.mem.startsWith(u8, obj_type.struct_type.?.name, "List_") or std.mem.startsWith(u8, obj_type.struct_type.?.name, "mantiq_std_collections_List_") or std.mem.eql(u8, obj_type.struct_type.?.name, "List")));
+                const is_dict = obj_type.kind == .Dict or (obj_type.kind == .Struct and obj_type.struct_type != null and (std.mem.startsWith(u8, obj_type.struct_type.?.name, "Dict_") or std.mem.startsWith(u8, obj_type.struct_type.?.name, "mantiq_std_collections_Dict_") or std.mem.eql(u8, obj_type.struct_type.?.name, "Dict")));
+
+                if (is_list) {
                     var inner_type = types.Type{ .kind = .Any };
-                    if (obj_type.payload) |p| inner_type = p.*;
+                    if (obj_type.payload) |p| {
+                        inner_type = p.*;
+                    } else if (obj_type.kind == .Struct and obj_type.struct_type != null) {
+                        const s_name = obj_type.struct_type.?.name;
+                        const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |pos| pos + 5 else null;
+                        if (prefix_idx) |pos| {
+                            const sub = s_name[pos..];
+                            inner_type = types.Type{ .kind = types.parseTypeString(sub) };
+                        }
+                    }
                     const inner_llvm = typeToLLVM(self.allocator, inner_type);
+                    const obj_llvm = typeToLLVM(self.allocator, obj_type);
                     
                     const ptr_temp = self.nextTemp();
-                    try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ ptr_temp, obj_val });
+                    try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, obj_llvm, obj_val });
                     
                     const elem_ptr = self.nextTemp();
                     try writer.print("  %t.{d} = getelementptr inbounds {s}, ptr %t.{d}, i64 {s}\n", .{ elem_ptr, inner_llvm, ptr_temp, index_i64 });
                     
                     return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{elem_ptr});
-                } else if (obj_type.kind == .String) {
-                    const ptr_temp = self.nextTemp();
-                    try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ ptr_temp, obj_val });
-                    
-                    const elem_ptr = self.nextTemp();
-                    try writer.print("  %t.{d} = getelementptr inbounds i8, ptr %t.{d}, i64 {s}\n", .{ elem_ptr, ptr_temp, index_i64 });
-                    
-                    return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{elem_ptr});
-                } else if (obj_type.kind == .RawPointer or obj_type.kind == .CStr) {
-                    var inner_type = types.Type{ .kind = .U8 };
-                    if (obj_type.kind != .CStr and obj_type.payload != null) inner_type = obj_type.payload.?.*;
-                    const inner_llvm = typeToLLVM(self.allocator, inner_type);
-                    
-                    const elem_ptr = self.nextTemp();
-                    try writer.print("  %t.{d} = getelementptr inbounds {s}, ptr {s}, i64 {s}\n", .{ elem_ptr, inner_llvm, obj_val, index_i64 });
-                    
-                    return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{elem_ptr});
-                } else if (obj_type.kind == .Dict) {
+                } else if (is_dict) {
                     var k_type = types.Type{ .kind = .Any };
                     var v_type = types.Type{ .kind = .Any };
                     var k_kind: types.TypeKind = .I32;
@@ -2327,9 +2392,10 @@ pub const LLVMCodegen = struct {
                         }
                     }
                     const k_llvm = typeToLLVM(self.allocator, k_type);
+                    const obj_llvm = typeToLLVM(self.allocator, obj_type);
                     
                     const ptr_temp = self.nextTemp();
-                    try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ ptr_temp, obj_val });
+                    try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, obj_llvm, obj_val });
                     
                     const k_size_ptr = self.nextTemp();
                     const k_size_int = self.nextTemp();
@@ -2356,23 +2422,42 @@ pub const LLVMCodegen = struct {
                     const res_ptr = self.nextTemp();
                     try writer.print("  %t.{d} = call ptr @__mantiq_dict_get_or_insert(ptr %t.{d}, ptr %t.{d}, i32 %t.{d})\n", .{ res_ptr, ptr_temp, k_alloc, hash_temp });
                     return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{res_ptr});
+                } else if (obj_type.kind == .String or (obj_type.kind == .Struct and obj_type.struct_type != null and !is_dict and !is_list and (std.mem.eql(u8, obj_type.struct_type.?.name, "String") or std.mem.eql(u8, obj_type.struct_type.?.name, "mantiq_std_string_String") or std.mem.eql(u8, obj_type.struct_type.?.name, "std_string_String")))) {
+                    const str_llvm = typeToLLVM(self.allocator, obj_type);
+                    const ptr_temp = self.nextTemp();
+                    try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, str_llvm, obj_val });
+                    
+                    const elem_ptr = self.nextTemp();
+                    try writer.print("  %t.{d} = getelementptr inbounds i8, ptr %t.{d}, i64 {s}\n", .{ elem_ptr, ptr_temp, index_i64 });
+                    
+                    return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{elem_ptr});
+                } else if (obj_type.kind == .RawPointer or obj_type.kind == .CStr) {
+                    var inner_type = types.Type{ .kind = .U8 };
+                    if (obj_type.kind != .CStr and obj_type.payload != null) inner_type = obj_type.payload.?.*;
+                    const inner_llvm = typeToLLVM(self.allocator, inner_type);
+                    
+                    const elem_ptr = self.nextTemp();
+                    try writer.print("  %t.{d} = getelementptr inbounds {s}, ptr {s}, i64 {s}\n", .{ elem_ptr, inner_llvm, obj_val, index_i64 });
+                    
+                    return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{elem_ptr});
                 }
                 
+                std.debug.print("[genLValue IndexExpr ERROR] Unsupported obj_type: kind={}, struct={s}, span=({d}:{d})-({d}:{d})\n", .{
+                    obj_type.kind,
+                    if (obj_type.struct_type) |st| st.name else "none",
+                    node.span.start_row, node.span.start_col, node.span.end_row, node.span.end_col,
+                });
                 return error.UnsupportedNode;
             },
             else => {
-                std.debug.print("Unsupported node type for LValue generation: {}, span=({d}:{d})-({d}:{d})\n", .{node.node_type, node.span.start_row, node.span.start_col, node.span.end_row, node.span.end_col});
-                if (node.node_type == .CallExpr) {
-                    const c = &node.data.CallExpr;
-                    std.debug.print("  CallExpr callee node_type: {}, arguments count: {d}\n", .{c.callee.node_type, c.arguments.len});
-                    if (c.callee.node_type == .Identifier) {
-                        std.debug.print("  Callee Identifier name: {s}\n", .{c.callee.data.Identifier.name});
-                    } else if (c.callee.node_type == .MemberExpr) {
-                        const m = &c.callee.data.MemberExpr;
-                        std.debug.print("  Callee MemberExpr property: {s}, object node_type: {}\n", .{m.property, m.object.node_type});
-                    }
-                }
-                return error.UnsupportedNode;
+                // Materialize RValue expression into a temporary stack slot
+                const rval = try self.genExpr(node);
+                const r_type = node.inferred_type orelse types.Type{ .kind = .Any };
+                const r_llvm = typeToLLVM(self.allocator, r_type);
+                const temp_alloc = self.nextTemp();
+                try writer.print("  %t.{d} = alloca {s}\n", .{ temp_alloc, r_llvm });
+                try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ r_llvm, rval, temp_alloc });
+                return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{temp_alloc});
             },
         }
     }
@@ -2780,6 +2865,7 @@ pub const LLVMCodegen = struct {
             },
             .BreakStmt => {
                 if (self.active_loop_exit.len == 0) {
+                    std.debug.print("[BreakStmt ERROR] active_loop_exit is empty! span=({d}:{d})\n", .{ node.span.start_row, node.span.start_col });
                     return error.UnsupportedNode;
                 }
                 try writer.print("  br label %{s}\n", .{self.active_loop_exit});
@@ -2791,6 +2877,7 @@ pub const LLVMCodegen = struct {
             },
             .ContinueStmt => {
                 if (self.active_loop_cond.len == 0) {
+                    std.debug.print("[ContinueStmt ERROR] active_loop_cond is empty! span=({d}:{d})\n", .{ node.span.start_row, node.span.start_col });
                     return error.UnsupportedNode;
                 }
                 try writer.print("  br label %{s}\n", .{self.active_loop_cond});
@@ -3621,20 +3708,25 @@ pub const LLVMCodegen = struct {
                             }
                         }
                     }
-                    if (std.mem.eql(u8, func_name, "List")) {
+                    const is_list_func = std.mem.eql(u8, func_name, "List") or std.mem.startsWith(u8, func_name, "List_") or std.mem.startsWith(u8, func_name, "mantiq_std_collections_List_") or std.mem.endsWith(u8, func_name, "_List");
+                    const is_dict_func = std.mem.eql(u8, func_name, "Dict") or std.mem.startsWith(u8, func_name, "Dict_") or std.mem.startsWith(u8, func_name, "mantiq_std_collections_Dict_") or std.mem.endsWith(u8, func_name, "_Dict");
+
+                    if (is_list_func) {
+                        const ret_t = if (node.inferred_type) |inf_t| typeToLLVM(self.allocator, inf_t) else "{ ptr, i64, i64 }";
                         const fat1 = self.nextTemp();
                         const fat2 = self.nextTemp();
                         const fat3 = self.nextTemp();
-                        try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} undef, ptr null, 0\n", .{fat1});
-                        try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 0, 1\n", .{ fat2, fat1 });
-                        try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 0, 2\n", .{ fat3, fat2 });
+                        try writer.print("  %t.{d} = insertvalue {s} undef, ptr null, 0\n", .{ fat1, ret_t });
+                        try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 0, 1\n", .{ fat2, ret_t, fat1 });
+                        try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 0, 2\n", .{ fat3, ret_t, fat2 });
                         return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat3});
-                    } else if (std.mem.eql(u8, func_name, "Dict")) {
+                    } else if (is_dict_func) {
                         var k_size: u64 = 8;
                         var v_size: u64 = 8;
                         var is_str_flag: u32 = 0;
-                        if (node.inferred_type) |inf_t| {
-                            if (inf_t.kind == .Dict and inf_t.tuple_types != null and inf_t.tuple_types.?.len == 2) {
+                        const inf_t_opt = node.inferred_type orelse c.callee.inferred_type;
+                        if (inf_t_opt) |inf_t| {
+                            if (inf_t.tuple_types != null and inf_t.tuple_types.?.len == 2) {
                                 const k_type = inf_t.tuple_types.?[0];
                                 const v_type = inf_t.tuple_types.?[1];
                                 k_size = types.getTypeSize(k_type);
@@ -3652,6 +3744,11 @@ pub const LLVMCodegen = struct {
                                 }
                             }
                         }
+                        if (std.mem.indexOf(u8, func_name, "String_mantiq_std_string_String") != null or std.mem.indexOf(u8, func_name, "String_String") != null) {
+                            k_size = 24;
+                            v_size = 24;
+                            is_str_flag = 2;
+                        }
                         const dict_ptr = self.nextTemp();
                         const dict_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{dict_ptr});
                         if (c.arguments.len > 0) {
@@ -3661,12 +3758,73 @@ pub const LLVMCodegen = struct {
                             try writer.print("  {s} = call ptr @__mantiq_dict_create(i32 {d}, i32 {d}, i32 {d})\n", .{ dict_name, k_size, v_size, is_str_flag });
                         }
 
+                        const ret_t = if (node.inferred_type) |inf_t| typeToLLVM(self.allocator, inf_t) else "{ ptr, i64, i64 }";
                         const fat1 = self.nextTemp();
                         const fat2 = self.nextTemp();
                         const fat3 = self.nextTemp();
-                        try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} undef, ptr {s}, 0\n", .{ fat1, dict_name });
-                        try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 0, 1\n", .{ fat2, fat1 });
-                        try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 0, 2\n", .{ fat3, fat2 });
+                        try writer.print("  %t.{d} = insertvalue {s} undef, ptr {s}, 0\n", .{ fat1, ret_t, dict_name });
+                        try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 0, 1\n", .{ fat2, ret_t, fat1 });
+                        try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 0, 2\n", .{ fat3, ret_t, fat2 });
+                        return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat3});
+                    } else if (std.mem.eql(u8, func_name, "String")) {
+                        const ret_t = if (node.inferred_type) |inf_t| typeToLLVM(self.allocator, inf_t) else "{ ptr, i64, i64 }";
+                        var data_val: []const u8 = "null";
+                        var len_val: []const u8 = "0";
+                        var cap_val: []const u8 = "0";
+                        var data_type: []const u8 = "ptr";
+                        var len_type: []const u8 = "i64";
+                        var cap_type: []const u8 = "i64";
+
+                        if (c.arguments.len == 0) {
+                            // default empty
+                        } else if (c.arguments.len == 1 and c.arguments[0].node_type != .KeywordArg) {
+                            const arg0 = c.arguments[0];
+                            const arg_val = try self.genExpr(arg0);
+                            const arg_t = typeToLLVM(self.allocator, arg0.inferred_type orelse .{ .kind = .Any });
+                            return try self.coerceType(arg_val, arg_t, ret_t);
+                        } else {
+                            for (c.arguments, 0..) |arg, idx| {
+                                if (arg.node_type == .KeywordArg) {
+                                    const kw = arg.data.KeywordArg;
+                                    const v = try self.genExpr(kw.value);
+                                    const vt = typeToLLVM(self.allocator, kw.value.inferred_type orelse .{ .kind = .Any });
+                                    if (std.mem.eql(u8, kw.name, "data")) {
+                                        data_val = v;
+                                        data_type = vt;
+                                    } else if (std.mem.eql(u8, kw.name, "len")) {
+                                        len_val = v;
+                                        len_type = vt;
+                                    } else if (std.mem.eql(u8, kw.name, "capacity")) {
+                                        cap_val = v;
+                                        cap_type = vt;
+                                    }
+                                } else {
+                                    const v = try self.genExpr(arg);
+                                    const vt = typeToLLVM(self.allocator, arg.inferred_type orelse .{ .kind = .Any });
+                                    if (idx == 0) {
+                                        data_val = v;
+                                        data_type = vt;
+                                    } else if (idx == 1) {
+                                        len_val = v;
+                                        len_type = vt;
+                                    } else if (idx == 2) {
+                                        cap_val = v;
+                                        cap_type = vt;
+                                    }
+                                }
+                            }
+                        }
+
+                        data_val = try self.coerceType(data_val, data_type, "ptr");
+                        len_val = try self.coerceType(len_val, len_type, "i64");
+                        cap_val = try self.coerceType(cap_val, cap_type, "i64");
+
+                        const fat1 = self.nextTemp();
+                        const fat2 = self.nextTemp();
+                        const fat3 = self.nextTemp();
+                        try writer.print("  %t.{d} = insertvalue {s} undef, ptr {s}, 0\n", .{ fat1, ret_t, data_val });
+                        try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 {s}, 1\n", .{ fat2, ret_t, fat1, len_val });
+                        try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 {s}, 2\n", .{ fat3, ret_t, fat2, cap_val });
                         return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat3});
                     } else if (std.mem.eql(u8, func_name, "Channel") or std.mem.eql(u8, func_name, "channel")) {
                         var cap_val: []const u8 = "32";
@@ -4416,16 +4574,29 @@ pub const LLVMCodegen = struct {
                 
                 const obj_type = idx.object.inferred_type orelse types.Type{ .kind = .Any };
                 
-                if (obj_type.kind == .List) {
+                const is_list = obj_type.kind == .List or (obj_type.kind == .Struct and obj_type.struct_type != null and (std.mem.startsWith(u8, obj_type.struct_type.?.name, "List_") or std.mem.startsWith(u8, obj_type.struct_type.?.name, "mantiq_std_collections_List_") or std.mem.eql(u8, obj_type.struct_type.?.name, "List")));
+                const is_dict = obj_type.kind == .Dict or (obj_type.kind == .Struct and obj_type.struct_type != null and (std.mem.startsWith(u8, obj_type.struct_type.?.name, "Dict_") or std.mem.startsWith(u8, obj_type.struct_type.?.name, "mantiq_std_collections_Dict_") or std.mem.eql(u8, obj_type.struct_type.?.name, "Dict")));
+
+                if (is_list) {
                     var inner_type = types.Type{ .kind = .Any };
-                    if (obj_type.payload) |p| inner_type = p.*;
+                    if (obj_type.payload) |p| {
+                        inner_type = p.*;
+                    } else if (obj_type.kind == .Struct and obj_type.struct_type != null) {
+                        const s_name = obj_type.struct_type.?.name;
+                        const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |pos| pos + 5 else null;
+                        if (prefix_idx) |pos| {
+                            const sub = s_name[pos..];
+                            inner_type = types.Type{ .kind = types.parseTypeString(sub) };
+                        }
+                    }
                     const inner_llvm = typeToLLVM(self.allocator, inner_type);
+                    const obj_llvm = typeToLLVM(self.allocator, obj_type);
                     
                     const index_llvm = typeToLLVM(self.allocator, idx.index.inferred_type orelse types.Type{ .kind = .Any });
                     const coerced_index = try self.coerceType(index_val, index_llvm, "i64");
                     
                     const len_temp = self.nextTemp();
-                    try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 1\n", .{ len_temp, obj_val });
+                    try writer.print("  %t.{d} = extractvalue {s} {s}, 1\n", .{ len_temp, obj_llvm, obj_val });
                     
                     const cmp_low = self.nextTemp();
                     try writer.print("  %t.{d} = icmp slt i64 {s}, 0\n", .{ cmp_low, coerced_index });
@@ -4449,7 +4620,7 @@ pub const LLVMCodegen = struct {
                     try writer.print("{s}:\n", .{ok_lbl});
                     
                     const ptr_temp = self.nextTemp();
-                    try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ ptr_temp, obj_val });
+                    try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, obj_llvm, obj_val });
                     
                     const elem_ptr = self.nextTemp();
                     try writer.print("  %t.{d} = getelementptr inbounds {s}, ptr %t.{d}, i64 {s}\n", .{ elem_ptr, inner_llvm, ptr_temp, coerced_index });
@@ -4472,7 +4643,7 @@ pub const LLVMCodegen = struct {
                     const item_val = self.nextTemp();
                     try writer.print("  %t.{d} = load {s}, ptr %t.{d}\n", .{ item_val, inner_llvm, elem_ptr });
                     return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{item_val});
-                } else if (obj_type.kind == .Dict) {
+                } else if (is_dict) {
                     var k_type = types.Type{ .kind = .Any };
                     var v_type = types.Type{ .kind = .Any };
                     var k_kind: types.TypeKind = .I32;
@@ -4485,9 +4656,10 @@ pub const LLVMCodegen = struct {
                     }
                     const k_llvm = typeToLLVM(self.allocator, k_type);
                     const v_llvm = typeToLLVM(self.allocator, v_type);
+                    const obj_llvm = typeToLLVM(self.allocator, obj_type);
                     
                     const ptr_temp = self.nextTemp();
-                    try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ ptr_temp, obj_val });
+                    try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, obj_llvm, obj_val });
                     
                     const k_size_ptr = self.nextTemp();
                     const k_size_int = self.nextTemp();
@@ -4661,13 +4833,14 @@ pub const LLVMCodegen = struct {
                     spread_idx += 1;
                 }
 
-                // 4. Construct { ptr, i64, i64 }
+                // 4. Construct { ptr, i64, i64 } or named List struct
+                const ret_t = if (node.inferred_type) |inf_t| typeToLLVM(self.allocator, inf_t) else "{ ptr, i64, i64 }";
                 const fat_temp1 = self.nextTemp();
-                try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} undef, ptr {s}, 0\n", .{ fat_temp1, ptr_name });
+                try writer.print("  %t.{d} = insertvalue {s} undef, ptr {s}, 0\n", .{ fat_temp1, ret_t, ptr_name });
                 const fat_temp2 = self.nextTemp();
-                try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 %t.{d}, 1\n", .{ fat_temp2, fat_temp1, final_len });
+                try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 %t.{d}, 1\n", .{ fat_temp2, ret_t, fat_temp1, final_len });
                 const fat_temp3 = self.nextTemp();
-                try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 %t.{d}, 2\n", .{ fat_temp3, fat_temp2, final_len });
+                try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 %t.{d}, 2\n", .{ fat_temp3, ret_t, fat_temp2, final_len });
 
                 const fat_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat_temp3});
                 try self.registerTemp(fat_name, ptr_name);
@@ -4832,12 +5005,13 @@ pub const LLVMCodegen = struct {
                 const final_buf = self.nextTemp();
                 try writer.print("  %t.{d} = load ptr, ptr %t.{d}\n", .{ final_buf, acc_buf_slot });
 
+                const ret_t = if (node.inferred_type) |inf_t| typeToLLVM(self.allocator, inf_t) else "{ ptr, i64, i64 }";
                 const fat1 = self.nextTemp();
-                try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} undef, ptr %t.{d}, 0\n", .{ fat1, final_buf });
+                try writer.print("  %t.{d} = insertvalue {s} undef, ptr %t.{d}, 0\n", .{ fat1, ret_t, final_buf });
                 const fat2 = self.nextTemp();
-                try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 %t.{d}, 1\n", .{ fat2, fat1, final_len });
+                try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 %t.{d}, 1\n", .{ fat2, ret_t, fat1, final_len });
                 const fat3 = self.nextTemp();
-                try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 %t.{d}, 2\n", .{ fat3, fat2, final_len });
+                try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 %t.{d}, 2\n", .{ fat3, ret_t, fat2, final_len });
 
                 const fat_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat3});
                 try self.registerTemp(fat_name, buf_name);
@@ -4877,8 +5051,9 @@ pub const LLVMCodegen = struct {
                         const iterable_val = try self.genExpr(k.data.SpreadExpr.iterable);
                         var src_dict_ptr: []const u8 = iterable_val;
                         if (std.mem.startsWith(u8, iterable_val, "{") or (k.data.SpreadExpr.iterable.inferred_type != null and k.data.SpreadExpr.iterable.inferred_type.?.kind == .Dict)) {
+                            const src_llvm = typeToLLVM(self.allocator, k.data.SpreadExpr.iterable.inferred_type orelse types.Type{ .kind = .Any });
                             const src_temp = self.nextTemp();
-                            try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ src_temp, iterable_val });
+                            try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ src_temp, src_llvm, iterable_val });
                             src_dict_ptr = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{src_temp});
                         }
                         try writer.print("  call void @__mantiq_dict_merge(ptr {s}, ptr {s})\n", .{ dict_name, src_dict_ptr });
@@ -4920,12 +5095,13 @@ pub const LLVMCodegen = struct {
                 try writer.print("  %t.{d} = zext i32 %t.{d} to i64\n", .{ final_len_temp, count_32_temp });
                 const final_len_str = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{final_len_temp});
 
+                const ret_t = if (node.inferred_type) |inf_t| typeToLLVM(self.allocator, inf_t) else "{ ptr, i64, i64 }";
                 const fat_temp1 = self.nextTemp();
-                try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} undef, ptr {s}, 0\n", .{ fat_temp1, dict_name });
+                try writer.print("  %t.{d} = insertvalue {s} undef, ptr {s}, 0\n", .{ fat_temp1, ret_t, dict_name });
                 const fat_temp2 = self.nextTemp();
-                try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 {s}, 1\n", .{ fat_temp2, fat_temp1, final_len_str });
+                try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 {s}, 1\n", .{ fat_temp2, ret_t, fat_temp1, final_len_str });
                 const fat_temp3 = self.nextTemp();
-                try writer.print("  %t.{d} = insertvalue {{ ptr, i64, i64 }} %t.{d}, i64 {s}, 2\n", .{ fat_temp3, fat_temp2, final_len_str });
+                try writer.print("  %t.{d} = insertvalue {s} %t.{d}, i64 {s}, 2\n", .{ fat_temp3, ret_t, fat_temp2, final_len_str });
                 
                 const fat_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat_temp3});
                 try self.registerTemp(fat_name, dict_name);
@@ -5122,7 +5298,8 @@ pub const LLVMCodegen = struct {
                     }
                     const temp = self.nextTemp();
                     const temp_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{temp});
-                    try writer.print("  {s} = extractvalue {{ ptr, i64, i64 }} {s}, {d}\n", .{ temp_name, obj_val, idx });
+                    const obj_llvm = typeToLLVM(self.allocator, obj_inferred);
+                    try writer.print("  {s} = extractvalue {s} {s}, {d}\n", .{ temp_name, obj_llvm, obj_val, idx });
                     return temp_name;
                 } else if (obj_inferred.kind == .Union and obj_inferred.union_type != null) {
                     const ut = obj_inferred.union_type.?;
@@ -5292,8 +5469,26 @@ pub const LLVMCodegen = struct {
 
                 const receiver_is_rawptr = obj_raw.kind == .RawPointer;
 
+                const is_list_struct = (obj_inferred.kind == .Struct and obj_inferred.struct_type != null and (std.mem.startsWith(u8, obj_inferred.struct_type.?.name, "List_") or std.mem.startsWith(u8, obj_inferred.struct_type.?.name, "mantiq_std_collections_List_") or std.mem.eql(u8, obj_inferred.struct_type.?.name, "List")));
+                const is_dict_struct = (obj_inferred.kind == .Struct and obj_inferred.struct_type != null and (std.mem.startsWith(u8, obj_inferred.struct_type.?.name, "Dict_") or std.mem.startsWith(u8, obj_inferred.struct_type.?.name, "mantiq_std_collections_Dict_") or std.mem.eql(u8, obj_inferred.struct_type.?.name, "Dict")));
+
+                var struct_has_method = false;
                 if ((obj_inferred.kind == .Struct and obj_inferred.struct_type != null) or 
                     (obj_inferred.kind == .Union and obj_inferred.union_type != null)) {
+                    const s_name = if (obj_inferred.kind == .Struct) obj_inferred.struct_type.?.name else obj_inferred.union_type.?.name;
+                    const s_mangled = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ s_name, m.method_name });
+                    const s_methods = if (obj_inferred.kind == .Struct) obj_inferred.struct_type.?.methods else obj_inferred.union_type.?.methods;
+                    for (s_methods) |meth| {
+                        if (std.mem.eql(u8, meth.name, s_mangled) or std.mem.eql(u8, meth.name, m.method_name)) {
+                            struct_has_method = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (((obj_inferred.kind == .Struct and obj_inferred.struct_type != null) or 
+                    (obj_inferred.kind == .Union and obj_inferred.union_type != null)) and
+                    ((!is_list_struct and !is_dict_struct) or struct_has_method)) {
                     
                     const name = if (obj_inferred.kind == .Struct) obj_inferred.struct_type.?.name else obj_inferred.union_type.?.name;
                     const mangled_name = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ name, m.method_name });
@@ -5479,21 +5674,32 @@ pub const LLVMCodegen = struct {
                     const fat_name = try std.fmt.allocPrint(self.allocator, "%t.{d}", .{fat3});
                     try self.registerTemp(fat_name, ptr_name);
                     return fat_name;
-                } else if (obj_inferred.kind == .List) {
-                    if (std.mem.eql(u8, m.method_name, "length") or std.mem.eql(u8, m.method_name, "len")) {
+                } else if (obj_inferred.kind == .List or is_list_struct) {
+                    const obj_llvm = typeToLLVM(self.allocator, obj_inferred);
+                    if (std.mem.eql(u8, m.method_name, "length") or std.mem.eql(u8, m.method_name, "len") or std.mem.eql(u8, m.method_name, "count")) {
                         const rec_val = try self.genExpr(m.receiver);
                         const len_val = self.nextTemp();
-                        try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 1\n", .{ len_val, rec_val });
+                        try writer.print("  %t.{d} = extractvalue {s} {s}, 1\n", .{ len_val, obj_llvm, rec_val });
                         return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{len_val});
                     } else if (std.mem.eql(u8, m.method_name, "clear")) {
                         const lval_addr = try self.genLValue(m.receiver);
                         const len_ptr = self.nextTemp();
-                        try writer.print("  %t.{d} = getelementptr {{ ptr, i64, i64 }}, ptr {s}, i32 0, i32 1\n", .{ len_ptr, lval_addr });
+                        try writer.print("  %t.{d} = getelementptr {s}, ptr {s}, i32 0, i32 1\n", .{ len_ptr, obj_llvm, lval_addr });
                         try writer.print("  store i64 0, ptr %t.{d}\n", .{len_ptr});
                         return "null";
                     } else if (std.mem.eql(u8, m.method_name, "append")) {
                         const lval_addr = try self.genLValue(m.receiver);
-                        const elem_type = obj_inferred.payload.?.*;
+                        var elem_type = types.Type{ .kind = .Any };
+                        if (obj_inferred.payload) |p| {
+                            elem_type = p.*;
+                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
+                            const s_name = obj_inferred.struct_type.?.name;
+                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
+                            if (prefix_idx) |idx| {
+                                const sub = s_name[idx..];
+                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
+                            }
+                        }
                         const elem_size = types.getTypeSize(elem_type);
                         var elem_val = try self.genExpr(m.arguments[0]);
                         const elem_inferred = m.arguments[0].inferred_type orelse types.Type{ .kind = .Any };
@@ -5503,15 +5709,156 @@ pub const LLVMCodegen = struct {
                         const elem_ptr = self.nextTemp();
                         try writer.print("  %t.{d} = alloca {s}\n", .{ elem_ptr, elem_t_name });
                         try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ elem_t_name, elem_val, elem_ptr });
-                        try writer.print("  call void @__mantiq_list_append(ptr {s}, ptr %t.{d}, i64 {d})\n", .{ lval_addr, elem_ptr, elem_size });
+                        try writer.print("  call void @__nizam_list_append(ptr {s}, ptr %t.{d}, i64 {d})\n", .{ lval_addr, elem_ptr, elem_size });
                         return "null";
-                    }
-                    return "null";
-                } else if (obj_inferred.kind == .Dict) {
-                    if (std.mem.eql(u8, m.method_name, "length") or std.mem.eql(u8, m.method_name, "len")) {
+                    } else if (std.mem.eql(u8, m.method_name, "extend")) {
+                        const lval_addr = try self.genLValue(m.receiver);
+                        const arg_val = try self.genLValue(m.arguments[0]);
+                        var elem_type = types.Type{ .kind = .Any };
+                        if (obj_inferred.payload) |p| {
+                            elem_type = p.*;
+                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
+                            const s_name = obj_inferred.struct_type.?.name;
+                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
+                            if (prefix_idx) |idx| {
+                                const sub = s_name[idx..];
+                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
+                            }
+                        }
+                        const elem_size = types.getTypeSize(elem_type);
+                        try writer.print("  call void @__nizam_list_extend(ptr {s}, ptr {s}, i64 {d})\n", .{ lval_addr, arg_val, elem_size });
+                        return "null";
+                    } else if (std.mem.eql(u8, m.method_name, "pop") or std.mem.eql(u8, m.method_name, "pop_index")) {
+                        const lval_addr = try self.genLValue(m.receiver);
+                        var elem_type = types.Type{ .kind = .Any };
+                        if (obj_inferred.payload) |p| {
+                            elem_type = p.*;
+                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
+                            const s_name = obj_inferred.struct_type.?.name;
+                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
+                            if (prefix_idx) |idx| {
+                                const sub = s_name[idx..];
+                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
+                            }
+                        }
+                        const elem_size = types.getTypeSize(elem_type);
+                        const elem_t_name = typeToLLVM(self.allocator, elem_type);
+                        const out_ptr = self.nextTemp();
+                        try writer.print("  %t.{d} = alloca {s}\n", .{ out_ptr, elem_t_name });
+                        if (m.arguments.len > 0) {
+                            var idx_val = try self.genExpr(m.arguments[0]);
+                            const idx_inferred = m.arguments[0].inferred_type orelse types.Type{ .kind = .I64 };
+                            const idx_source_t = typeToLLVM(self.allocator, idx_inferred);
+                            idx_val = try self.coerceType(idx_val, idx_source_t, "i64");
+                            try writer.print("  call i8 @__nizam_list_pop_index(ptr {s}, i64 {s}, ptr %t.{d}, i64 {d})\n", .{ lval_addr, idx_val, out_ptr, elem_size });
+                        } else {
+                            try writer.print("  call i8 @__nizam_list_pop(ptr {s}, ptr %t.{d}, i64 {d})\n", .{ lval_addr, out_ptr, elem_size });
+                        }
+                        const res_val = self.nextTemp();
+                        try writer.print("  %t.{d} = load {s}, ptr %t.{d}\n", .{ res_val, elem_t_name, out_ptr });
+                        return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{res_val});
+                    } else if (std.mem.eql(u8, m.method_name, "insert")) {
+                        const lval_addr = try self.genLValue(m.receiver);
+                        var elem_type = types.Type{ .kind = .Any };
+                        if (obj_inferred.payload) |p| {
+                            elem_type = p.*;
+                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
+                            const s_name = obj_inferred.struct_type.?.name;
+                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
+                            if (prefix_idx) |idx| {
+                                const sub = s_name[idx..];
+                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
+                            }
+                        }
+                        const elem_size = types.getTypeSize(elem_type);
+                        const elem_t_name = typeToLLVM(self.allocator, elem_type);
+                        var idx_val = try self.genExpr(m.arguments[0]);
+                        const idx_inferred = m.arguments[0].inferred_type orelse types.Type{ .kind = .I64 };
+                        const idx_source_t = typeToLLVM(self.allocator, idx_inferred);
+                        idx_val = try self.coerceType(idx_val, idx_source_t, "i64");
+                        var elem_val = try self.genExpr(m.arguments[1]);
+                        const elem_inferred = m.arguments[1].inferred_type orelse types.Type{ .kind = .Any };
+                        const elem_source_t = typeToLLVM(self.allocator, elem_inferred);
+                        elem_val = try self.coerceType(elem_val, elem_source_t, elem_t_name);
+                        const elem_ptr = self.nextTemp();
+                        try writer.print("  %t.{d} = alloca {s}\n", .{ elem_ptr, elem_t_name });
+                        try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ elem_t_name, elem_val, elem_ptr });
+                        try writer.print("  call void @__nizam_list_insert(ptr {s}, i64 {s}, ptr %t.{d}, i64 {d})\n", .{ lval_addr, idx_val, elem_ptr, elem_size });
+                        return "null";
+                    } else if (std.mem.eql(u8, m.method_name, "remove")) {
+                        const lval_addr = try self.genLValue(m.receiver);
+                        var elem_type = types.Type{ .kind = .Any };
+                        if (obj_inferred.payload) |p| {
+                            elem_type = p.*;
+                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
+                            const s_name = obj_inferred.struct_type.?.name;
+                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
+                            if (prefix_idx) |idx| {
+                                const sub = s_name[idx..];
+                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
+                            }
+                        }
+                        const elem_size = types.getTypeSize(elem_type);
+                        const elem_t_name = typeToLLVM(self.allocator, elem_type);
+                        var elem_val = try self.genExpr(m.arguments[0]);
+                        const elem_inferred = m.arguments[0].inferred_type orelse types.Type{ .kind = .Any };
+                        const elem_source_t = typeToLLVM(self.allocator, elem_inferred);
+                        elem_val = try self.coerceType(elem_val, elem_source_t, elem_t_name);
+                        const elem_ptr = self.nextTemp();
+                        try writer.print("  %t.{d} = alloca {s}\n", .{ elem_ptr, elem_t_name });
+                        try writer.print("  store {s} {s}, ptr %t.{d}\n", .{ elem_t_name, elem_val, elem_ptr });
+                        const r_val = self.nextTemp();
+                        try writer.print("  %t.{d} = call i8 @__nizam_list_remove(ptr {s}, ptr %t.{d}, i64 {d})\n", .{ r_val, lval_addr, elem_ptr, elem_size });
+                        return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{r_val});
+                    } else if (std.mem.eql(u8, m.method_name, "reverse")) {
+                        const lval_addr = try self.genLValue(m.receiver);
+                        var elem_type = types.Type{ .kind = .Any };
+                        if (obj_inferred.payload) |p| {
+                            elem_type = p.*;
+                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
+                            const s_name = obj_inferred.struct_type.?.name;
+                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
+                            if (prefix_idx) |idx| {
+                                const sub = s_name[idx..];
+                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
+                            }
+                        }
+                        const elem_size = types.getTypeSize(elem_type);
+                        try writer.print("  call void @__nizam_list_reverse(ptr {s}, i64 {d})\n", .{ lval_addr, elem_size });
+                        return "null";
+                    } else if (std.mem.eql(u8, m.method_name, "get")) {
                         const rec_val = try self.genExpr(m.receiver);
                         const ptr_temp = self.nextTemp();
-                        try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ ptr_temp, rec_val });
+                        try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, obj_llvm, rec_val });
+                        var idx_val = try self.genExpr(m.arguments[0]);
+                        const idx_inferred = m.arguments[0].inferred_type orelse types.Type{ .kind = .I64 };
+                        const idx_source_t = typeToLLVM(self.allocator, idx_inferred);
+                        idx_val = try self.coerceType(idx_val, idx_source_t, "i64");
+                        var elem_type = types.Type{ .kind = .Any };
+                        if (obj_inferred.payload) |p| {
+                            elem_type = p.*;
+                        } else if (obj_inferred.kind == .Struct and obj_inferred.struct_type != null) {
+                            const s_name = obj_inferred.struct_type.?.name;
+                            const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
+                            if (prefix_idx) |idx| {
+                                const sub = s_name[idx..];
+                                elem_type = types.Type{ .kind = types.parseTypeString(sub) };
+                            }
+                        }
+                        const elem_t_name = typeToLLVM(self.allocator, elem_type);
+                        const gep_temp = self.nextTemp();
+                        try writer.print("  %t.{d} = getelementptr {s}, ptr %t.{d}, i64 {s}\n", .{ gep_temp, elem_t_name, ptr_temp, idx_val });
+                        const res_temp = self.nextTemp();
+                        try writer.print("  %t.{d} = load {s}, ptr %t.{d}\n", .{ res_temp, elem_t_name, gep_temp });
+                        return try std.fmt.allocPrint(self.allocator, "%t.{d}", .{res_temp});
+                    }
+                    return "null";
+                } else if (obj_inferred.kind == .Dict or is_dict_struct) {
+                    const obj_llvm = typeToLLVM(self.allocator, obj_inferred);
+                    if (std.mem.eql(u8, m.method_name, "length") or std.mem.eql(u8, m.method_name, "len") or std.mem.eql(u8, m.method_name, "count")) {
+                        const rec_val = try self.genExpr(m.receiver);
+                        const ptr_temp = self.nextTemp();
+                        try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, obj_llvm, rec_val });
                         const dict_struct = self.nextTemp();
                         try writer.print("  %t.{d} = load %MantiqDict, ptr %t.{d}\n", .{ dict_struct, ptr_temp });
                         const count = self.nextTemp();
@@ -5522,25 +5869,25 @@ pub const LLVMCodegen = struct {
                     } else if (std.mem.eql(u8, m.method_name, "clear")) {
                         const rec_val = try self.genExpr(m.receiver);
                         const dict_ptr = self.nextTemp();
-                        try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ dict_ptr, rec_val });
+                        try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ dict_ptr, obj_llvm, rec_val });
                         try writer.print("  call void @__mantiq_dict_clear(ptr %t.{d})\n", .{dict_ptr});
                         
                         if (self.genLValue(m.receiver)) |lval_addr| {
                             const len_ptr = self.nextTemp();
-                            try writer.print("  %t.{d} = getelementptr {{ ptr, i64, i64 }}, ptr {s}, i32 0, i32 1\n", .{ len_ptr, lval_addr });
+                            try writer.print("  %t.{d} = getelementptr {s}, ptr {s}, i32 0, i32 1\n", .{ len_ptr, obj_llvm, lval_addr });
                             try writer.print("  store i64 0, ptr %t.{d}\n", .{len_ptr});
                         } else |_| {}
                         return "null";
                     } else if (std.mem.eql(u8, m.method_name, "keys")) {
                         const rec_val = try self.genExpr(m.receiver);
                         const ptr_temp = self.nextTemp();
-                        try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ ptr_temp, rec_val });
+                        try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, obj_llvm, rec_val });
 
                         const list_alloca = self.nextTemp();
                         try writer.print("  %t.{d} = alloca {{ ptr, i64, i64 }}\n", .{ list_alloca });
                         try writer.print("  store {{ ptr, i64, i64 }} zeroinitializer, ptr %t.{d}\n", .{ list_alloca });
 
-                        const key_type = obj_inferred.tuple_types.?[0];
+                        const key_type = if (obj_inferred.tuple_types != null and obj_inferred.tuple_types.?.len > 0) obj_inferred.tuple_types.?[0] else types.Type{ .kind = .Any };
                         const key_size = types.getTypeSize(key_type);
 
                         try writer.print("  call void @__mantiq_dict_keys(ptr %t.{d}, ptr %t.{d}, i32 {d})\n", .{ ptr_temp, list_alloca, key_size });
@@ -5564,8 +5911,9 @@ pub const LLVMCodegen = struct {
                         const k_llvm = typeToLLVM(self.allocator, k_type);
                         key_val = try self.coerceType(key_val, key_source_t, k_llvm);
                         
+                        const rec_llvm = typeToLLVM(self.allocator, obj_inferred);
                         const ptr_temp = self.nextTemp();
-                        try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ ptr_temp, rec_val });
+                        try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, rec_llvm, rec_val });
                         
                         const k_size_ptr = self.nextTemp();
                         const k_size_int = self.nextTemp();
@@ -5616,8 +5964,9 @@ pub const LLVMCodegen = struct {
                         const v_llvm = typeToLLVM(self.allocator, v_type);
                         key_val = try self.coerceType(key_val, key_source_t, k_llvm);
 
+                        const rec_llvm = typeToLLVM(self.allocator, obj_inferred);
                         const ptr_temp = self.nextTemp();
-                        try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ ptr_temp, rec_val });
+                        try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, rec_llvm, rec_val });
 
                         const k_size_ptr = self.nextTemp();
                         const k_size_int = self.nextTemp();
@@ -5682,8 +6031,9 @@ pub const LLVMCodegen = struct {
                         const k_llvm = typeToLLVM(self.allocator, k_type);
                         key_val = try self.coerceType(key_val, key_source_t, k_llvm);
                         
+                        const rec_llvm = typeToLLVM(self.allocator, obj_inferred);
                         const ptr_temp = self.nextTemp();
-                        try writer.print("  %t.{d} = extractvalue {{ ptr, i64, i64 }} {s}, 0\n", .{ ptr_temp, rec_val });
+                        try writer.print("  %t.{d} = extractvalue {s} {s}, 0\n", .{ ptr_temp, rec_llvm, rec_val });
                         
                         const k_size_ptr = self.nextTemp();
                         const k_size_int = self.nextTemp();

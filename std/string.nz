@@ -1487,7 +1487,15 @@ struct StringBuilder:
     // The StringBuilder itself is unaffected and can continue to be used.
     // -----------------------------------------------------------------
     fn builder_to_string(self as ptr[StringBuilder]) as String:
-        return String.make((deref self).buffer to cstr)
+        if (deref self).buffer == None to ptr[u8] or (deref self).len == 0 to usize:
+            let empty_d as ptr[u8] = make[u8](1 to usize) to ptr[u8]
+            empty_d[0] = 0 to u8
+            return String(data = empty_d, len = 0 to usize, capacity = 1 to usize)
+        let cap as usize = (deref self).len + 1 to usize
+        let d as ptr[u8] = make[u8](cap) to ptr[u8]
+        memcpy(d to ptr, (deref self).buffer to ptr, (deref self).len)
+        d[(deref self).len] = 0 to u8
+        return String(data = d, len = (deref self).len, capacity = cap)
 
 // ============================================================================
 // Module-level documentation notes:

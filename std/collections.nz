@@ -9,6 +9,58 @@
 // data structures such as Vec, Deque, HashMap, BTreeMap, etc.
 // ============================================================================
 
+// ── List[T] ──────────────────────────────────────────────────────────
+struct List[T]:
+    public var data as ptr[T]
+    public var _len as i64
+    public var capacity as i64
+
+    public fn __init__(self as ptr[List[T]]):
+        (deref self).data = None to ptr[T]
+        (deref self)._len = 0 to i64
+        (deref self).capacity = 0 to i64
+
+    public fn init(self as ptr[List[T]]):
+        (deref self).data = None to ptr[T]
+        (deref self)._len = 0 to i64
+        (deref self).capacity = 0 to i64
+
+    public fn length(self as ptr[List[T]]) as i64:
+        return (deref self)._len
+
+    public fn len(self as ptr[List[T]]) as i64:
+        return (deref self)._len
+
+    public fn count(self as ptr[List[T]]) as i64:
+        return (deref self)._len
+
+// ── Dict[K, V] ────────────────────────────────────────────────────────
+struct DictBucket[K, V]:
+    public var key as K
+    public var val as V
+    public var hash as u32
+    public var state as u8
+
+struct Dict[K, V]:
+    public var buckets as ptr[DictBucket[K, V]]
+    public var count as i64
+    public var capacity as i64
+
+    public fn __init__(self as ptr[Dict[K, V]]):
+        (deref self).buckets = None to ptr[DictBucket[K, V]]
+        (deref self).count = 0 to i64
+        (deref self).capacity = 0 to i64
+
+    public fn init(self as ptr[Dict[K, V]]):
+        (deref self).buckets = None to ptr[DictBucket[K, V]]
+        (deref self).count = 0 to i64
+        (deref self).capacity = 0 to i64
+
+    public fn length(self as ptr[Dict[K, V]]) as i64:
+        return (deref self).count
+
+    public fn len(self as ptr[Dict[K, V]]) as i64:
+        return (deref self).count
 
 // ============================================================================
 // Set[T]
@@ -43,7 +95,7 @@
 struct Set[T]:
     // Internal dictionary mapping elements -> True.
     // Uses the existing Dict implementation for all storage and lookup.
-    public var _dict as Dict[T, bool] = Dict[T, bool]()
+    public var _dict as Dict[T, bool]
 
     public fn __init__(self as ptr[Set[T]]):
         (deref self)._dict = Dict[T, bool]()
@@ -51,14 +103,7 @@ struct Set[T]:
     public fn init(self as ptr[Set[T]]):
         (deref self)._dict = Dict[T, bool]()
 
-    public fn __getitem__(self as Set[T], item as T) -> bool:
-        return self.has(item)
 
-    public fn __setitem__(self as ptr[Set[T]], item as T, val as bool):
-        if val:
-            self.add(item)
-        else:
-            let discarded as bool = self.remove(item)
 
     // -----------------------------------------------------------------
     // Set.add(self, item)
@@ -264,7 +309,7 @@ struct Set[T]:
 // Implemented around Dict[T, bool], providing all non-mutating set operations.
 // ============================================================================
 struct FrozenSet[T]:
-    public var _dict as Dict[T, bool] = Dict[T, bool]()
+    public var _dict as Dict[T, bool]
 
     public fn __init__(self as ptr[FrozenSet[T]]):
         (deref self)._dict = Dict[T, bool]()
@@ -385,7 +430,7 @@ struct FrozenSet[T]:
 // An immutable ordered sequence of elements of type T, providing full
 // parity with Python's tuple data model (Section 3).
 struct Tuple[T]:
-    public var _items as List[T] = List[T]()
+    public var _items as List[T]
 
     public fn __init__(self as ptr[Tuple[T]]):
         (deref self)._items = List[T]()
@@ -426,8 +471,8 @@ struct Tuple[T]:
     public fn get(self as ptr[Tuple[T]], idx as i64) as T:
         return (deref self)._items[idx]
 
-    public fn __getitem__(self as Tuple[T], idx as i64) -> T:
-        return self._items[idx]
+    public fn __getitem__(self as ptr[Tuple[T]], idx as i64) as T:
+        return (deref self)._items[idx]
 
     public fn contains(self as ptr[Tuple[T]], item as T) as bool:
         return self.index(item) >= 0 to i64
@@ -538,16 +583,9 @@ struct DictItems[K, V]:
 // ── Bytes ─────────────────────────────────────────────────────────────
 // Immutable sequence of bytes, providing full parity with Python's bytes
 // data model (Section 11).
-extern fn __mantiq_list_fromhex(out_list as ptr, hex_str as cstr)
-extern fn __mantiq_list_hex(out_str as ptr, list_addr as ptr)
-extern fn __mantiq_list_decode(out_str as ptr, list_addr as ptr)
-extern fn __mantiq_list_insert(list_addr as ptr, index as i64, elem_addr as ptr, elem_size as i64)
-extern fn __mantiq_list_remove(list_addr as ptr, elem_addr as ptr, elem_size as i64) as i8
-extern fn __mantiq_list_pop(list_addr as ptr, out_addr as ptr, elem_size as i64) as i8
-extern fn __mantiq_list_pop_index(list_addr as ptr, index as i64, out_addr as ptr, elem_size as i64) as i8
 
 struct Bytes:
-    public var _bytes as List[u8] = List[u8]()
+    public var _bytes as List[u8]
 
     public fn __init__(self as ptr[Bytes]):
         (deref self)._bytes = List[u8]()
@@ -586,7 +624,31 @@ struct Bytes:
 
     public fn fromhex(hex_str as cstr) as Bytes:
         var b as Bytes = Bytes()
-        __mantiq_list_fromhex((ref b._bytes) to ptr, hex_str)
+        if hex_str == None to cstr:
+            return b
+        extern fn strlen(s as cstr) as usize
+        let slen as i64 = strlen(hex_str) to i64
+        var i as i64 = 0 to i64
+        while i + 1 to i64 < slen:
+            let c0 as u8 = hex_str[i]
+            let c1 as u8 = hex_str[i + 1 to i64]
+            var h0 as u8 = 0 to u8
+            if c0 >= 48 to u8 and c0 <= 57 to u8:
+                h0 = c0 - 48 to u8
+            elif c0 >= 65 to u8 and c0 <= 70 to u8:
+                h0 = c0 - 55 to u8
+            elif c0 >= 97 to u8 and c0 <= 102 to u8:
+                h0 = c0 - 87 to u8
+            var h1 as u8 = 0 to u8
+            if c1 >= 48 to u8 and c1 <= 57 to u8:
+                h1 = c1 - 48 to u8
+            elif c1 >= 65 to u8 and c1 <= 70 to u8:
+                h1 = c1 - 55 to u8
+            elif c1 >= 97 to u8 and c1 <= 102 to u8:
+                h1 = c1 - 87 to u8
+            let byte_val as u8 = (h0 * 16 to u8) + h1
+            b._bytes.append(byte_val)
+            i = i + 2 to i64
         return b
 
     public fn length(self as ptr[Bytes]) as i64:
@@ -595,8 +657,8 @@ struct Bytes:
     public fn get(self as ptr[Bytes], idx as i64) as u8:
         return (deref self)._bytes[idx]
 
-    public fn __getitem__(self as Bytes, idx as i64) -> u8:
-        return self._bytes[idx]
+    public fn __getitem__(self as ptr[Bytes], idx as i64) as u8:
+        return (deref self)._bytes[idx]
 
     public fn count(self as ptr[Bytes], byte_val as u8) as i64:
         var c as i64 = 0 to i64
@@ -684,14 +746,36 @@ struct Bytes:
         return Bytes.from_list((deref self)._bytes)
 
     public fn decode(self as ptr[Bytes]) as String:
-        var s as String = ""
-        __mantiq_list_decode((ref s) to ptr, (ref (deref self)._bytes) to ptr)
-        return s
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return String(data = "" to ptr[u8], len = 0 to usize, capacity = 0 to usize)
+        extern fn mantiq_malloc(size as i64) as ptr
+        let d as ptr[u8] = mantiq_malloc(n + 1 to i64) to ptr[u8]
+        var i as i64 = 0 to i64
+        while i < n:
+            d[i] = (deref self)._bytes[i]
+            i = i + 1 to i64
+        d[n] = 0 to u8
+        return String(data = d, len = n to usize, capacity = (n + 1 to i64) to usize)
 
     public fn hex(self as ptr[Bytes]) as String:
-        var s as String = ""
-        __mantiq_list_hex((ref s) to ptr, (ref (deref self)._bytes) to ptr)
-        return s
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return String(data = "" to ptr[u8], len = 0 to usize, capacity = 0 to usize)
+        let hex_len as i64 = n * 2 to i64
+        extern fn mantiq_malloc(size as i64) as ptr
+        let d as ptr[u8] = mantiq_malloc(hex_len + 1 to i64) to ptr[u8]
+        let hex_chars as cstr = "0123456789abcdef" to cstr
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            let hi as i64 = ((b / 16 to u8) & 15 to u8) to i64
+            let lo as i64 = (b & 15 to u8) to i64
+            d[i * 2 to i64] = hex_chars[hi]
+            d[i * 2 to i64 + 1 to i64] = hex_chars[lo]
+            i = i + 1 to i64
+        d[hex_len] = 0 to u8
+        return String(data = d, len = hex_len to usize, capacity = (hex_len + 1 to i64) to usize)
 
     public fn to_list(self as ptr[Bytes]) as List[u8]:
         var res as List[u8] = List[u8]()
@@ -1219,7 +1303,7 @@ struct Bytes:
 // Mutable sequence of bytes, providing full parity with Python's bytearray
 // data model (Section 12).
 struct ByteArray:
-    public var _bytes as List[u8] = List[u8]()
+    public var _bytes as List[u8]
 
     public fn __init__(self as ptr[ByteArray]):
         (deref self)._bytes = List[u8]()
@@ -1289,8 +1373,8 @@ struct ByteArray:
     public fn set(self as ptr[ByteArray], idx as i64, val as u8):
         (deref self)._bytes[idx] = val
 
-    public fn __getitem__(self as ByteArray, idx as i64) -> u8:
-        return self._bytes[idx]
+    public fn __getitem__(self as ptr[ByteArray], idx as i64) as u8:
+        return (deref self)._bytes[idx]
 
     public fn count(self as ptr[ByteArray], byte_val as u8) as i64:
         var c as i64 = 0 to i64
@@ -1426,14 +1510,36 @@ struct ByteArray:
         return res
 
     public fn decode(self as ptr[ByteArray]) as String:
-        var s as String = ""
-        __mantiq_list_decode((ref s) to ptr, (ref (deref self)._bytes) to ptr)
-        return s
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return String(data = "" to ptr[u8], len = 0 to usize, capacity = 0 to usize)
+        extern fn mantiq_malloc(size as i64) as ptr
+        let d as ptr[u8] = mantiq_malloc(n + 1 to i64) to ptr[u8]
+        var i as i64 = 0 to i64
+        while i < n:
+            d[i] = (deref self)._bytes[i]
+            i = i + 1 to i64
+        d[n] = 0 to u8
+        return String(data = d, len = n to usize, capacity = (n + 1 to i64) to usize)
 
     public fn hex(self as ptr[ByteArray]) as String:
-        var s as String = ""
-        __mantiq_list_hex((ref s) to ptr, (ref (deref self)._bytes) to ptr)
-        return s
+        let n as i64 = self.length()
+        if n == 0 to i64:
+            return String(data = "" to ptr[u8], len = 0 to usize, capacity = 0 to usize)
+        let hex_len as i64 = n * 2 to i64
+        extern fn mantiq_malloc(size as i64) as ptr
+        let d as ptr[u8] = mantiq_malloc(hex_len + 1 to i64) to ptr[u8]
+        let hex_chars as cstr = "0123456789abcdef" to cstr
+        var i as i64 = 0 to i64
+        while i < n:
+            let b as u8 = (deref self)._bytes[i]
+            let hi as i64 = ((b / 16 to u8) & 15 to u8) to i64
+            let lo as i64 = (b & 15 to u8) to i64
+            d[i * 2 to i64] = hex_chars[hi]
+            d[i * 2 to i64 + 1 to i64] = hex_chars[lo]
+            i = i + 1 to i64
+        d[hex_len] = 0 to u8
+        return String(data = d, len = hex_len to usize, capacity = (hex_len + 1 to i64) to usize)
 
     public fn append(self as ptr[ByteArray], val as u8):
         (deref self)._bytes.append(val)
@@ -1446,27 +1552,29 @@ struct ByteArray:
             i = i + 1 to i64
 
     public fn insert(self as ptr[ByteArray], idx as i64, val as u8):
-        var v as u8 = val
-        __mantiq_list_insert((ref (deref self)._bytes) to ptr, idx, (ref v) to ptr, 1 to i64)
+        (deref self)._bytes.insert(idx, val)
 
     public fn remove(self as ptr[ByteArray], val as u8) as bool:
-        var v as u8 = val
-        let r as i8 = __mantiq_list_remove((ref (deref self)._bytes) to ptr, (ref v) to ptr, 1 to i64)
-        return r != 0 to i8
+        let n as i64 = self.length()
+        var i as i64 = 0 to i64
+        while i < n:
+            if (deref self)._bytes[i] == val:
+                let _ as u8 = (deref self)._bytes.pop(i)
+                return True
+            i = i + 1 to i64
+        return False
 
     public fn pop(self as ptr[ByteArray]) as u8:
         let n as i64 = self.length()
         if n > 0 to i64:
-            let last as u8 = (deref self)._bytes[n - 1 to i64]
-            var dummy as u8 = 0 to u8
-            let _ as i8 = __mantiq_list_pop((ref (deref self)._bytes) to ptr, (ref dummy) to ptr, 1 to i64)
-            return last
+            return (deref self)._bytes.pop()
         return 0 to u8
 
     public fn pop_index(self as ptr[ByteArray], idx as i64) as u8:
-        var val as u8 = 0 to u8
-        let _ as i8 = __mantiq_list_pop_index((ref (deref self)._bytes) to ptr, idx, (ref val) to ptr, 1 to i64)
-        return val
+        let n as i64 = self.length()
+        if n > 0 to i64:
+            return (deref self)._bytes.pop(idx)
+        return 0 to u8
 
     public fn clear(self as ptr[ByteArray]):
         (deref self)._bytes.clear()

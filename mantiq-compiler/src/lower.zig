@@ -3334,6 +3334,7 @@ const val = std.fmt.parseFloat(f64, val_str) catch {
                 cloned.data = .{ .UnsafeBlock = .{ .body = try self.cloneNode(u.body, hygiene_id, locals) } };
             },
             else => {
+                std.debug.print("[lower.zig cloneNode ERROR] Unsupported node_type={}\n", .{node.node_type});
                 return error.UnsupportedNode;
             },
         }

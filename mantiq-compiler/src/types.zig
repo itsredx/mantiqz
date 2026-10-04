@@ -209,7 +209,7 @@ pub fn isImplicitlyConvertible(from: Type, to: Type) bool {
             if (from.payload != null and to.payload != null) {
                 return isImplicitlyConvertible(from.payload.?.*, to.payload.?.*);
             }
-            return (from.payload == null) == (to.payload == null);
+            return true;
         }
         if (from.kind == .Function or from.kind == .Closure) {
             return functionTypesEqual(from, to);
@@ -223,8 +223,9 @@ pub fn isImplicitlyConvertible(from: Type, to: Type) bool {
     if (to.kind == .Any or from.kind == .Any) return true; // Anything can be cast to Any, and Any can cast to anything
     if (from.kind == .Error or to.kind == .Error) return true; // Prevent cascading errors
 
-    // Allow string literals (.String / .AsciiStr) to be assigned to string encodings
+    // Allow string literals (.String / .AsciiStr) to be assigned to string encodings or String struct
     if (from.kind == .String or from.kind == .AsciiStr) {
+        if (to.kind == .Struct and to.struct_type != null and (std.mem.endsWith(u8, to.struct_type.?.name, "String") or std.mem.eql(u8, to.struct_type.?.name, "String"))) return true;
         return switch (to.kind) {
             .CStr, .AsciiStr, .Utf8Str, .WebStr, .RangeStr, .String => true,
             else => false,
@@ -241,6 +242,20 @@ pub fn isImplicitlyConvertible(from: Type, to: Type) bool {
         else => false,
     };
     if (from_is_num and to_is_num) return true;
+
+    // Allow conversion between built-in List/Dict/String and generic/named List/Dict/String structs
+    const to_is_list = to.kind == .Struct and to.struct_type != null and (std.mem.startsWith(u8, to.struct_type.?.name, "List_") or std.mem.startsWith(u8, to.struct_type.?.name, "mantiq_std_collections_List_") or std.mem.eql(u8, to.struct_type.?.name, "List"));
+    const from_is_list = from.kind == .Struct and from.struct_type != null and (std.mem.startsWith(u8, from.struct_type.?.name, "List_") or std.mem.startsWith(u8, from.struct_type.?.name, "mantiq_std_collections_List_") or std.mem.eql(u8, from.struct_type.?.name, "List"));
+    const to_is_dict = to.kind == .Struct and to.struct_type != null and (std.mem.startsWith(u8, to.struct_type.?.name, "Dict_") or std.mem.startsWith(u8, to.struct_type.?.name, "mantiq_std_collections_Dict_") or std.mem.eql(u8, to.struct_type.?.name, "Dict"));
+    const from_is_dict = from.kind == .Struct and from.struct_type != null and (std.mem.startsWith(u8, from.struct_type.?.name, "Dict_") or std.mem.startsWith(u8, from.struct_type.?.name, "mantiq_std_collections_Dict_") or std.mem.eql(u8, from.struct_type.?.name, "Dict"));
+    const to_is_str = (to.kind == .Struct and to.struct_type != null and (std.mem.endsWith(u8, to.struct_type.?.name, "String") or std.mem.eql(u8, to.struct_type.?.name, "String"))) or to.kind == .String;
+    const from_is_str = (from.kind == .Struct and from.struct_type != null and (std.mem.endsWith(u8, from.struct_type.?.name, "String") or std.mem.eql(u8, from.struct_type.?.name, "String"))) or from.kind == .String;
+
+    if (from.kind == .List and to_is_list) return true;
+    if (to.kind == .List and from_is_list) return true;
+    if (from.kind == .Dict and to_is_dict) return true;
+    if (to.kind == .Dict and from_is_dict) return true;
+    if (to_is_str and from_is_str) return true;
 
     // Explicit typing enforced: no implicit widenings or string conversions.
 

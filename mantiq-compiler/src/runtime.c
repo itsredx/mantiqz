@@ -512,13 +512,14 @@ static MantiqDropRegistry g_drop_registry = {NULL, 0, 0};
 
 int mantiq_type_needs_drop(const char* type_name) {
     if (!type_name || type_name[0] == '\0') return 0;
+    if (strncmp(type_name, "DictItems", 9) == 0) return 0;
     if (strcmp(type_name, "String") == 0 ||
         strcmp(type_name, "StringBuilder") == 0 ||
-        strcmp(type_name, "List") == 0 ||
-        strcmp(type_name, "Dict") == 0 ||
-        strcmp(type_name, "Set") == 0 ||
-        strcmp(type_name, "FrozenSet") == 0 ||
-        strcmp(type_name, "Tuple") == 0 ||
+        strncmp(type_name, "List", 4) == 0 ||
+        strncmp(type_name, "Dict", 4) == 0 ||
+        strncmp(type_name, "Set", 3) == 0 ||
+        strncmp(type_name, "FrozenSet", 9) == 0 ||
+        strncmp(type_name, "Tuple", 5) == 0 ||
         strcmp(type_name, "Bytes") == 0 ||
         strcmp(type_name, "ByteArray") == 0) {
         return 1;
@@ -1117,7 +1118,7 @@ void* __mantiq_dict_get_or_insert(MantiqDict* d, void* key, uint32_t hash) {
     return d->values + idx * d->val_size;
 }
 
-void __mantiq_list_append(void* list_addr, void* elem_addr, int64_t elem_size) {
+static void __mantiq_raw_list_append(void* list_addr, void* elem_addr, int64_t elem_size) {
     struct List {
         void* data;
         size_t len;
@@ -1134,12 +1135,40 @@ void __mantiq_list_append(void* list_addr, void* elem_addr, int64_t elem_size) {
     l->len++;
 }
 
+__attribute__((weak)) void __nizam_list_append(void* list_addr, void* elem_addr, int64_t elem_size) {
+    __mantiq_raw_list_append(list_addr, elem_addr, elem_size);
+}
+
+
 void __mantiq_dict_keys(MantiqDict* d, void* list_addr, int32_t key_size) {
     if (!d || !list_addr) return;
     for (int32_t i = 0; i < d->capacity; i++) {
         if (d->occupied[i]) {
             void* key_ptr = d->keys + (i * d->key_size);
-            __mantiq_list_append(list_addr, key_ptr, key_size);
+            // Dict string keys are stored as borrowed copies of the caller's
+            // String (never freed by __mantiq_dict_destroy). The List returned
+            // by keys() is an owning value, so its elements must own a private
+            // buffer or __nizam_drop_List would free borrowed/string-literal
+            // pointers.
+            if (d->is_string_key == 2 && d->key_size >= 24) {
+                struct MantiqHeapStr { char* ptr; size_t len; size_t cap; };
+                struct MantiqHeapStr* src = (struct MantiqHeapStr*)key_ptr;
+                struct MantiqHeapStr owned;
+                if (src->ptr && src->len) {
+                    owned.cap = src->len + 1;
+                    owned.len = src->len;
+                    owned.ptr = (char*)mantiq_malloc((int64_t)owned.cap);
+                    memcpy(owned.ptr, src->ptr, src->len);
+                    ((char*)owned.ptr)[src->len] = 0;
+                } else {
+                    owned.ptr = NULL;
+                    owned.len = 0;
+                    owned.cap = 0;
+                }
+                __mantiq_raw_list_append(list_addr, &owned, (int64_t)sizeof(struct MantiqHeapStr));
+            } else {
+                __mantiq_raw_list_append(list_addr, key_ptr, key_size);
+            }
         }
     }
 }
@@ -1149,7 +1178,7 @@ void __mantiq_dict_values(MantiqDict* d, void* list_addr, int32_t val_size) {
     for (int32_t i = 0; i < d->capacity; i++) {
         if (d->occupied[i]) {
             void* val_ptr = d->values + (i * d->val_size);
-            __mantiq_list_append(list_addr, val_ptr, val_size);
+            __mantiq_raw_list_append(list_addr, val_ptr, val_size);
         }
     }
 }
@@ -1293,7 +1322,7 @@ void __mantiq_dict_merge(MantiqDict* dest, MantiqDict* src) {
     }
 }
 
-void __mantiq_list_extend(void* list_addr, void* src_list_addr, int64_t elem_size) {
+void __nizam_list_extend(void* list_addr, void* src_list_addr, int64_t elem_size) {
     if (!list_addr || !src_list_addr) return;
     struct MantiqRawList {
         uint8_t* data;
@@ -1304,11 +1333,11 @@ void __mantiq_list_extend(void* list_addr, void* src_list_addr, int64_t elem_siz
     struct MantiqRawList* src = (struct MantiqRawList*)src_list_addr;
     if (!src->data || src->len == 0) return;
     for (size_t i = 0; i < src->len; i++) {
-        __mantiq_list_append(dest, src->data + i * elem_size, elem_size);
+        __mantiq_raw_list_append(dest, src->data + i * elem_size, elem_size);
     }
 }
 
-int64_t __mantiq_list_count(void* list_addr, void* elem_addr, int64_t elem_size) {
+int64_t __nizam_list_count(void* list_addr, void* elem_addr, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1323,7 +1352,7 @@ int64_t __mantiq_list_count(void* list_addr, void* elem_addr, int64_t elem_size)
     return n;
 }
 
-int64_t __mantiq_list_index(void* list_addr, void* elem_addr, int64_t elem_size) {
+int64_t __nizam_list_index(void* list_addr, void* elem_addr, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1337,7 +1366,7 @@ int64_t __mantiq_list_index(void* list_addr, void* elem_addr, int64_t elem_size)
     return -1;
 }
 
-int8_t __mantiq_list_remove(void* list_addr, void* elem_addr, int64_t elem_size) {
+int8_t __nizam_list_remove(void* list_addr, void* elem_addr, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1360,7 +1389,7 @@ int8_t __mantiq_list_remove(void* list_addr, void* elem_addr, int64_t elem_size)
     return 0;
 }
 
-void __mantiq_list_insert(void* list_addr, int64_t index, void* elem_addr, int64_t elem_size) {
+void __nizam_list_insert(void* list_addr, int64_t index, void* elem_addr, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1372,7 +1401,7 @@ void __mantiq_list_insert(void* list_addr, int64_t index, void* elem_addr, int64
     if (at < 0) at = (int64_t)l->len + at;
     if (at < 0) at = 0;
     if (at > (int64_t)l->len) at = (int64_t)l->len;
-    __mantiq_list_append(l, elem_addr, elem_size);
+    __mantiq_raw_list_append(l, elem_addr, elem_size);
     if (at < (int64_t)l->len - 1) {
         memmove(l->data + (at + 1) * (size_t)elem_size,
                 l->data + at * (size_t)elem_size,
@@ -1381,7 +1410,7 @@ void __mantiq_list_insert(void* list_addr, int64_t index, void* elem_addr, int64
     }
 }
 
-void __mantiq_list_reverse(void* list_addr, int64_t elem_size) {
+void __nizam_list_reverse(void* list_addr, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1401,7 +1430,7 @@ void __mantiq_list_reverse(void* list_addr, int64_t elem_size) {
     mantiq_free(tmp);
 }
 
-void __mantiq_list_copy(void* dest_addr, void* src_addr, int64_t elem_size) {
+void __nizam_list_copy(void* dest_addr, void* src_addr, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1425,7 +1454,7 @@ void __mantiq_list_copy(void* dest_addr, void* src_addr, int64_t elem_size) {
     memcpy(d->data, s->data, s->len * (size_t)elem_size);
 }
 
-int8_t __mantiq_list_pop(void* list_addr, void* out_addr, int64_t elem_size) {
+int8_t __nizam_list_pop(void* list_addr, void* out_addr, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1438,7 +1467,7 @@ int8_t __mantiq_list_pop(void* list_addr, void* out_addr, int64_t elem_size) {
     return 1;
 }
 
-int8_t __mantiq_list_pop_index(void* list_addr, int64_t index, void* out_addr, int64_t elem_size) {
+int8_t __nizam_list_pop_index(void* list_addr, int64_t index, void* out_addr, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1490,7 +1519,7 @@ static int __mantiq_sort_cmp(const void* pa, const void* pb) {
     return memcmp(a, b, (size_t)es);
 }
 
-void __mantiq_list_sort(void* list_addr, int64_t elem_size) {
+void __nizam_list_sort(void* list_addr, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1503,7 +1532,7 @@ void __mantiq_list_sort(void* list_addr, int64_t elem_size) {
     qsort(l->data, l->len, (size_t)elem_size, __mantiq_sort_cmp);
 }
 
-void __mantiq_list_sort_str(void* list_addr) {
+void __nizam_list_sort_str(void* list_addr) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1540,7 +1569,7 @@ static void __mantiq_clone_strings_block(uint8_t* dest, const uint8_t* src, size
     }
 }
 
-void __mantiq_list_concat(void* dest_addr, void* a_addr, void* b_addr, int64_t elem_size) {
+void __nizam_list_concat(void* dest_addr, void* a_addr, void* b_addr, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1575,7 +1604,7 @@ void __mantiq_list_concat(void* dest_addr, void* a_addr, void* b_addr, int64_t e
     if (bl > 0) memcpy(d->data + al * (size_t)elem_size, b->data, bl * (size_t)elem_size);
 }
 
-void __mantiq_list_repeat(void* dest_addr, void* src_addr, int64_t n, int64_t elem_size) {
+void __nizam_list_repeat(void* dest_addr, void* src_addr, int64_t n, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1608,7 +1637,7 @@ void __mantiq_list_repeat(void* dest_addr, void* src_addr, int64_t n, int64_t el
     }
 }
 
-int8_t __mantiq_list_contains(void* a_addr, void* e_addr, int64_t elem_size) {
+int8_t __nizam_list_contains(void* a_addr, void* e_addr, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1622,7 +1651,7 @@ int8_t __mantiq_list_contains(void* a_addr, void* e_addr, int64_t elem_size) {
     return 0;
 }
 
-int8_t __mantiq_list_contains_str(void* a_addr, void* e_addr) {
+int8_t __nizam_list_contains_str(void* a_addr, void* e_addr) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1638,7 +1667,7 @@ int8_t __mantiq_list_contains_str(void* a_addr, void* e_addr) {
     return 0;
 }
 
-int8_t __mantiq_list_equals(void* a_addr, void* b_addr, int64_t elem_size) {
+int8_t __nizam_list_equals(void* a_addr, void* b_addr, int64_t elem_size) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1654,7 +1683,7 @@ int8_t __mantiq_list_equals(void* a_addr, void* b_addr, int64_t elem_size) {
     return (memcmp(a->data, b->data, a->len * (size_t)elem_size) == 0) ? 1 : 0;
 }
 
-int8_t __mantiq_list_equals_str(void* a_addr, void* b_addr) {
+int8_t __nizam_list_equals_str(void* a_addr, void* b_addr) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1711,7 +1740,7 @@ static void __mantiq_strbuf_append_i64(struct MantiqStrBuf* b, int64_t v) {
     __mantiq_strbuf_append(b, tmp + idx + 1, 31 - idx - 1);
 }
 
-void* __mantiq_list_to_string(void* list_addr, int64_t elem_size, void* len_out) {
+void* __nizam_list_to_string(void* list_addr, int64_t elem_size, void* len_out) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1758,7 +1787,7 @@ void* __mantiq_list_to_string(void* list_addr, int64_t elem_size, void* len_out)
 }
 
 // ── Bytes and List[u8] Helpers ──────────────────────────────────────────
-void __mantiq_list_hex(void* out_str, void* list_addr) {
+void __nizam_list_hex(void* out_str, void* list_addr) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1793,7 +1822,7 @@ void __mantiq_list_hex(void* out_str, void* list_addr) {
     s->cap = hex_len + 1;
 }
 
-void __mantiq_list_decode(void* out_str, void* list_addr) {
+void __nizam_list_decode(void* out_str, void* list_addr) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1822,7 +1851,7 @@ void __mantiq_list_decode(void* out_str, void* list_addr) {
     s->cap = l->len + 1;
 }
 
-void __mantiq_list_fromhex(void* out_list, const char* hex_str) {
+void __nizam_list_fromhex(void* out_list, const char* hex_str) {
     struct MantiqRawList {
         uint8_t* data;
         size_t len;
@@ -1912,7 +1941,96 @@ void __nizam_drop_Dict(void* d_slot) {
     }
 }
 
-void __nizam_drop_List_flat(void* list_addr) {
+// ── Deprecated Weak __mantiq_list_* Wrappers ─────────────────────────
+__attribute__((weak)) void __mantiq_list_append(void* list_addr, void* elem_addr, int64_t elem_size) {
+    __nizam_list_append(list_addr, elem_addr, elem_size);
+}
+
+__attribute__((weak)) void __mantiq_list_extend(void* list_addr, void* src_list_addr, int64_t elem_size) {
+    __nizam_list_extend(list_addr, src_list_addr, elem_size);
+}
+
+__attribute__((weak)) int64_t __mantiq_list_count(void* list_addr, void* elem_addr, int64_t elem_size) {
+    return __nizam_list_count(list_addr, elem_addr, elem_size);
+}
+
+__attribute__((weak)) int64_t __mantiq_list_index(void* list_addr, void* elem_addr, int64_t elem_size) {
+    return __nizam_list_index(list_addr, elem_addr, elem_size);
+}
+
+__attribute__((weak)) int8_t __mantiq_list_remove(void* list_addr, void* elem_addr, int64_t elem_size) {
+    return __nizam_list_remove(list_addr, elem_addr, elem_size);
+}
+
+__attribute__((weak)) void __mantiq_list_insert(void* list_addr, int64_t index, void* elem_addr, int64_t elem_size) {
+    __nizam_list_insert(list_addr, index, elem_addr, elem_size);
+}
+
+__attribute__((weak)) void __mantiq_list_reverse(void* list_addr, int64_t elem_size) {
+    __nizam_list_reverse(list_addr, elem_size);
+}
+
+__attribute__((weak)) void __mantiq_list_copy(void* dest_addr, void* src_addr, int64_t elem_size) {
+    __nizam_list_copy(dest_addr, src_addr, elem_size);
+}
+
+__attribute__((weak)) int8_t __mantiq_list_pop(void* list_addr, void* out_addr, int64_t elem_size) {
+    return __nizam_list_pop(list_addr, out_addr, elem_size);
+}
+
+__attribute__((weak)) int8_t __mantiq_list_pop_index(void* list_addr, int64_t index, void* out_addr, int64_t elem_size) {
+    return __nizam_list_pop_index(list_addr, index, out_addr, elem_size);
+}
+
+__attribute__((weak)) void __mantiq_list_sort(void* list_addr, int64_t elem_size) {
+    __nizam_list_sort(list_addr, elem_size);
+}
+
+__attribute__((weak)) void __mantiq_list_sort_str(void* list_addr) {
+    __nizam_list_sort_str(list_addr);
+}
+
+__attribute__((weak)) void __mantiq_list_concat(void* dest_addr, void* a_addr, void* b_addr, int64_t elem_size) {
+    __nizam_list_concat(dest_addr, a_addr, b_addr, elem_size);
+}
+
+__attribute__((weak)) void __mantiq_list_repeat(void* dest_addr, void* src_addr, int64_t n, int64_t elem_size) {
+    __nizam_list_repeat(dest_addr, src_addr, n, elem_size);
+}
+
+__attribute__((weak)) int8_t __mantiq_list_contains(void* a_addr, void* e_addr, int64_t elem_size) {
+    return __nizam_list_contains(a_addr, e_addr, elem_size);
+}
+
+__attribute__((weak)) int8_t __mantiq_list_contains_str(void* a_addr, void* e_addr) {
+    return __nizam_list_contains_str(a_addr, e_addr);
+}
+
+__attribute__((weak)) int8_t __mantiq_list_equals(void* a_addr, void* b_addr, int64_t elem_size) {
+    return __nizam_list_equals(a_addr, b_addr, elem_size);
+}
+
+__attribute__((weak)) int8_t __mantiq_list_equals_str(void* a_addr, void* b_addr) {
+    return __nizam_list_equals_str(a_addr, b_addr);
+}
+
+__attribute__((weak)) void* __mantiq_list_to_string(void* list_addr, int64_t elem_size, void* len_out) {
+    return __nizam_list_to_string(list_addr, elem_size, len_out);
+}
+
+__attribute__((weak)) void __mantiq_list_hex(void* out_str, void* list_addr) {
+    __nizam_list_hex(out_str, list_addr);
+}
+
+__attribute__((weak)) void __mantiq_list_decode(void* out_str, void* list_addr) {
+    __nizam_list_decode(out_str, list_addr);
+}
+
+__attribute__((weak)) void __mantiq_list_fromhex(void* out_list, const char* hex_str) {
+    __nizam_list_fromhex(out_list, hex_str);
+}
+
+__attribute__((weak)) void __nizam_drop_List_flat(void* list_addr) {
     if (!list_addr) return;
     struct {
         void* data;
@@ -1929,7 +2047,7 @@ void __nizam_drop_List_flat(void* list_addr) {
 
 typedef void (*MantiqDropFn)(void* elem_ptr);
 
-void __nizam_drop_List(void* list_addr, int64_t elem_size, MantiqDropFn elem_drop_fn) {
+__attribute__((weak)) void __nizam_drop_List(void* list_addr, int64_t elem_size, MantiqDropFn elem_drop_fn) {
     if (!list_addr) return;
     struct {
         void* data;

@@ -234,19 +234,26 @@ pub const SemanticAnalyzer = struct {
     /// Consolidates the repeated resolveLocal + print + define pattern.
     fn declareSymbol(self: *SemanticAnalyzer, name: []const u8, kind: symbols.SymbolType, decl_node: ?*ast.Node) !*symbols.Symbol {
         if (self.current_scope.resolveLocal(name)) |existing| {
-            if (existing.decl_node != null) {
-                const kind_str = switch (kind) {
-                    .Variable => "variable",
-                    .Function => "function",
-                    .Class => "class",
-                    .Interface => "interface",
-                    .Struct => "struct",
-                    .Enum => "enum",
-                    .Union => "union",
-                    .Module => "module",
-                };
-                std.debug.print("Semantic Error: Redeclaration of {s} '{s}'\n", .{ kind_str, name });
-                return error.Redeclaration;
+            if (existing.decl_node) |dnode| {
+                if (kind == .Struct) {
+                    if (dnode.node_type == .StructDecl or dnode.node_type == .ClassDecl) {
+                        std.debug.print("Semantic Error: Redeclaration of struct '{s}'\n", .{name});
+                        return error.Redeclaration;
+                    }
+                } else {
+                    const kind_str = switch (kind) {
+                        .Variable => "variable",
+                        .Function => "function",
+                        .Class => "class",
+                        .Interface => "interface",
+                        .Struct => "struct",
+                        .Enum => "enum",
+                        .Union => "union",
+                        .Module => "module",
+                    };
+                    std.debug.print("Semantic Error: Redeclaration of {s} '{s}'\n", .{ kind_str, name });
+                    return error.Redeclaration;
+                }
             }
         }
         const sym = try self.allocator.create(symbols.Symbol);
@@ -469,7 +476,7 @@ pub const SemanticAnalyzer = struct {
                             const builtins = [_][]const u8{ "List", "Dict", "String" };
                             for (builtins) |b| {
                                 const sym = try self.allocator.create(symbols.Symbol);
-                                sym.* = .{ .name = b, .kind = .Struct, .decl_node = node };
+                                sym.* = .{ .name = b, .kind = .Struct, .decl_node = null };
                                 try sa.global_scope.define(sym);
                             }
                         }

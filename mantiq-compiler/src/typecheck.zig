@@ -305,8 +305,28 @@ pub const TypeChecker = struct {
                 for (gens) |gen| {
                     try t_types.append(try self.validateType(gen));
                 }
-                const st = try self.instantiateStruct(tmpl, try t_types.toOwnedSlice());
-                return types.Type{ .kind = .Struct, .struct_type = st };
+                const slice = try t_types.toOwnedSlice();
+                const st = try self.instantiateStruct(tmpl, slice);
+                var res = types.Type{ .kind = .Struct, .struct_type = st };
+                if (std.mem.startsWith(u8, st.name, "List_") or std.mem.startsWith(u8, st.name, "mantiq_std_collections_List_") or std.mem.eql(u8, st.name, "List")) {
+                    if (slice.len > 0) {
+                        const p = try self.allocator.create(types.Type);
+                        p.* = slice[0];
+                        res.payload = p;
+                    }
+                } else if (std.mem.startsWith(u8, st.name, "Dict_") or std.mem.startsWith(u8, st.name, "mantiq_std_collections_Dict_") or std.mem.eql(u8, st.name, "Dict")) {
+                    if (slice.len >= 2) {
+                        var kv = try self.allocator.alloc(types.Type, 2);
+                        kv[0] = slice[0];
+                        kv[1] = slice[1];
+                        res.tuple_types = kv;
+                    }
+                }
+                return res;
+            } else if (std.mem.eql(u8, name, "List") or std.mem.endsWith(u8, name, "_List")) {
+                return types.Type{ .kind = .List, .payload = null };
+            } else if (std.mem.eql(u8, name, "Dict") or std.mem.endsWith(u8, name, "_Dict")) {
+                return types.Type{ .kind = .Dict };
             } else {
                 std.debug.print("Type Error: Struct '{s}' requires generic arguments\n", .{name});
                 return error.TypeMismatch;
@@ -764,6 +784,9 @@ pub const TypeChecker = struct {
                             node.inferred_type = .{ .kind = .Dict };
                         }
                         is_builtin = true;
+                    } else if (std.mem.eql(u8, func_name, "String")) {
+                        node.inferred_type = .{ .kind = .String };
+                        is_builtin = true;
                     } else if (std.mem.eql(u8, func_name, "drop")) {
                         node.inferred_type = .{ .kind = .Void };
                         is_builtin = true;
@@ -1101,12 +1124,33 @@ pub const TypeChecker = struct {
                                 for (gargs) |gen| {
                                     try t_types.append(try self.validateType(gen));
                                 }
-                                const st = try self.instantiateStruct(tmpl, try t_types.toOwnedSlice());
+                                const slice = try t_types.toOwnedSlice();
+                                const st = try self.instantiateStruct(tmpl, slice);
                                 
                                 var id_data = c.callee.data.Identifier;
                                 id_data.name = st.name;
                                 c.callee.data = .{ .Identifier = id_data };
                                 callee_type = types.Type{ .kind = .Struct, .struct_type = st };
+                                if (std.mem.startsWith(u8, st.name, "List_") or std.mem.startsWith(u8, st.name, "mantiq_std_collections_List_") or std.mem.eql(u8, st.name, "List")) {
+                                    if (slice.len > 0) {
+                                        const p = try self.allocator.create(types.Type);
+                                        p.* = slice[0];
+                                        callee_type.payload = p;
+                                    }
+                                } else if (std.mem.startsWith(u8, st.name, "Dict_") or std.mem.startsWith(u8, st.name, "mantiq_std_collections_Dict_") or std.mem.eql(u8, st.name, "Dict")) {
+                                    if (slice.len >= 2) {
+                                        var kv = try self.allocator.alloc(types.Type, 2);
+                                        kv[0] = slice[0];
+                                        kv[1] = slice[1];
+                                        callee_type.tuple_types = kv;
+                                    }
+                                }
+                                c.callee.inferred_type = callee_type;
+                            } else if (std.mem.eql(u8, name, "List") or std.mem.endsWith(u8, name, "_List")) {
+                                callee_type = types.Type{ .kind = .List, .payload = null };
+                                c.callee.inferred_type = callee_type;
+                            } else if (std.mem.eql(u8, name, "Dict") or std.mem.endsWith(u8, name, "_Dict")) {
+                                callee_type = types.Type{ .kind = .Dict };
                                 c.callee.inferred_type = callee_type;
                             } else {
                                 std.debug.print("Type Error: Struct '{s}' requires generic arguments\n", .{name});
@@ -2641,6 +2685,64 @@ pub const TypeChecker = struct {
                         }
                     }
                     if (!found) {
+                        const is_dict_struct = std.mem.startsWith(u8, name, "Dict_") or std.mem.startsWith(u8, name, "mantiq_std_collections_Dict_") or std.mem.eql(u8, name, "Dict");
+                        const is_list_struct = std.mem.startsWith(u8, name, "List_") or std.mem.startsWith(u8, name, "mantiq_std_collections_List_") or std.mem.eql(u8, name, "List");
+                        if (is_list_struct) {
+                            for (m.arguments) |arg| {
+                                try self.checkNode(arg);
+                            }
+                            if (std.mem.eql(u8, m.method_name, "append") or std.mem.eql(u8, m.method_name, "extend") or std.mem.eql(u8, m.method_name, "insert") or std.mem.eql(u8, m.method_name, "remove") or std.mem.eql(u8, m.method_name, "clear") or std.mem.eql(u8, m.method_name, "sort") or std.mem.eql(u8, m.method_name, "reverse")) {
+                                node.inferred_type = .{ .kind = .Void };
+                                found = true;
+                            } else if (std.mem.eql(u8, m.method_name, "length") or std.mem.eql(u8, m.method_name, "len") or std.mem.eql(u8, m.method_name, "count") or std.mem.eql(u8, m.method_name, "index")) {
+                                node.inferred_type = .{ .kind = .I64 };
+                                found = true;
+                            } else if (std.mem.eql(u8, m.method_name, "pop") or std.mem.eql(u8, m.method_name, "pop_index") or std.mem.eql(u8, m.method_name, "get")) {
+                                var elem_t = types.Type{ .kind = .Any };
+                                if (rec_type.payload) |p| {
+                                    elem_t = p.*;
+                                } else {
+                                    const prefix_idx = if (std.mem.lastIndexOf(u8, name, "List_")) |idx| idx + 5 else null;
+                                    if (prefix_idx) |idx| {
+                                        const sub = name[idx..];
+                                        elem_t = types.Type{ .kind = types.parseTypeString(sub) };
+                                    }
+                                }
+                                node.inferred_type = elem_t;
+                                found = true;
+                            } else if (std.mem.eql(u8, m.method_name, "copy")) {
+                                node.inferred_type = rec_type;
+                                found = true;
+                            } else if (std.mem.eql(u8, m.method_name, "hex") or std.mem.eql(u8, m.method_name, "decode") or std.mem.eql(u8, m.method_name, "to_string")) {
+                                node.inferred_type = .{ .kind = .String };
+                                found = true;
+                            }
+                        } else if (is_dict_struct) {
+                            for (m.arguments) |arg| {
+                                try self.checkNode(arg);
+                            }
+                            if (std.mem.eql(u8, m.method_name, "length") or std.mem.eql(u8, m.method_name, "len") or std.mem.eql(u8, m.method_name, "count")) {
+                                node.inferred_type = .{ .kind = .I64 };
+                                found = true;
+                            } else if (std.mem.eql(u8, m.method_name, "clear") or std.mem.eql(u8, m.method_name, "update")) {
+                                node.inferred_type = .{ .kind = .Void };
+                                found = true;
+                            } else if (std.mem.eql(u8, m.method_name, "has") or std.mem.eql(u8, m.method_name, "contains") or std.mem.eql(u8, m.method_name, "remove") or std.mem.eql(u8, m.method_name, "popitem")) {
+                                node.inferred_type = .{ .kind = .Boolean };
+                                found = true;
+                            } else if (std.mem.eql(u8, m.method_name, "keys") or std.mem.eql(u8, m.method_name, "values")) {
+                                node.inferred_type = .{ .kind = .List };
+                                found = true;
+                            } else if (std.mem.eql(u8, m.method_name, "copy")) {
+                                node.inferred_type = rec_type;
+                                found = true;
+                            } else if (std.mem.eql(u8, m.method_name, "get") or std.mem.eql(u8, m.method_name, "pop") or std.mem.eql(u8, m.method_name, "setdefault") or std.mem.eql(u8, m.method_name, "items") or std.mem.eql(u8, m.method_name, "fromkeys")) {
+                                node.inferred_type = .{ .kind = .Any };
+                                found = true;
+                            }
+                        }
+                    }
+                    if (!found) {
                         const kind_name = if (rec_type.kind == .Struct) "Struct" else "Union";
                         std.debug.print("Type Error: {s} '{s}' has no method named '{s}'\n", .{kind_name, name, m.method_name});
                         return error.TypeMismatch;
@@ -2674,31 +2776,19 @@ pub const TypeChecker = struct {
                     node.inferred_type = .{ .kind = .String };
                 } else if (rec_type.kind == .List) {
                     m.is_dynamic = false;
-                    if (std.mem.eql(u8, m.method_name, "append")) {
-                        if (m.arguments.len != 1) {
-                            std.debug.print("Type Error: List.append expects 1 argument, got {d}\n", .{m.arguments.len});
-                            return error.TypeMismatch;
-                        }
-                        try self.checkNode(m.arguments[0]);
-                        const arg_t = m.arguments[0].inferred_type orelse types.Type{ .kind = .Any };
-                        const inner_t = if (rec_type.payload) |p| p.* else types.Type{ .kind = .Any };
-                        if (inner_t.kind != .Any and arg_t.kind != .Any and !types.isImplicitlyConvertible(arg_t, inner_t)) {
-                            std.debug.print("Type Error: List.append argument type mismatch. Expected {s}, got {s}\n", .{types.formatType(inner_t), types.formatType(arg_t)});
-                            return error.TypeMismatch;
-                        }
+                    for (m.arguments) |arg| {
+                        try self.checkNode(arg);
+                    }
+                    if (std.mem.eql(u8, m.method_name, "append") or std.mem.eql(u8, m.method_name, "extend") or std.mem.eql(u8, m.method_name, "insert") or std.mem.eql(u8, m.method_name, "remove") or std.mem.eql(u8, m.method_name, "clear") or std.mem.eql(u8, m.method_name, "sort") or std.mem.eql(u8, m.method_name, "reverse")) {
                         node.inferred_type = .{ .kind = .Void };
-                    } else if (std.mem.eql(u8, m.method_name, "length") or std.mem.eql(u8, m.method_name, "len")) {
-                        if (m.arguments.len != 0) {
-                            std.debug.print("Type Error: List.length expects 0 arguments, got {d}\n", .{m.arguments.len});
-                            return error.TypeMismatch;
-                        }
+                    } else if (std.mem.eql(u8, m.method_name, "length") or std.mem.eql(u8, m.method_name, "len") or std.mem.eql(u8, m.method_name, "count") or std.mem.eql(u8, m.method_name, "index")) {
                         node.inferred_type = .{ .kind = .I64 };
-                    } else if (std.mem.eql(u8, m.method_name, "clear")) {
-                        if (m.arguments.len != 0) {
-                            std.debug.print("Type Error: List.clear expects 0 arguments, got {d}\n", .{m.arguments.len});
-                            return error.TypeMismatch;
-                        }
-                        node.inferred_type = .{ .kind = .Void };
+                    } else if (std.mem.eql(u8, m.method_name, "pop") or std.mem.eql(u8, m.method_name, "pop_index") or std.mem.eql(u8, m.method_name, "get")) {
+                        node.inferred_type = if (rec_type.payload) |p| p.* else types.Type{ .kind = .Any };
+                    } else if (std.mem.eql(u8, m.method_name, "copy")) {
+                        node.inferred_type = rec_type;
+                    } else if (std.mem.eql(u8, m.method_name, "hex") or std.mem.eql(u8, m.method_name, "decode") or std.mem.eql(u8, m.method_name, "to_string")) {
+                        node.inferred_type = .{ .kind = .String };
                     } else {
                         std.debug.print("Type Error: List has no method named '{s}'\n", .{m.method_name});
                         return error.TypeMismatch;
@@ -2897,8 +2987,16 @@ pub const TypeChecker = struct {
                 try self.checkNode(comp.iterable);
                 const iter_t = comp.iterable.inferred_type orelse types.Type{ .kind = .Any };
                 var elem_type = types.Type{ .kind = .Any };
-                if (iter_t.kind == .List and iter_t.payload != null) {
+                const is_list_comp = iter_t.kind == .List or (iter_t.kind == .Struct and iter_t.struct_type != null and (std.mem.startsWith(u8, iter_t.struct_type.?.name, "List_") or std.mem.startsWith(u8, iter_t.struct_type.?.name, "mantiq_std_collections_List_") or std.mem.eql(u8, iter_t.struct_type.?.name, "List")));
+                if (is_list_comp and iter_t.payload != null) {
                     elem_type = iter_t.payload.?.*;
+                } else if (is_list_comp and iter_t.kind == .Struct and iter_t.struct_type != null) {
+                    const s_name = iter_t.struct_type.?.name;
+                    const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |idx| idx + 5 else null;
+                    if (prefix_idx) |idx| {
+                        const sub = s_name[idx..];
+                        elem_type = types.Type{ .kind = types.parseTypeString(sub) };
+                    }
                 } else if (iter_t.kind == .Slice and iter_t.payload != null) {
                     elem_type = iter_t.payload.?.*;
                 } else if (iter_t.kind == .I32 or iter_t.kind == .I64 or iter_t.kind == .USize) {
@@ -2985,14 +3083,34 @@ pub const TypeChecker = struct {
                         return;
                     }
                 }
-                if (obj_type.kind == .List) {
+                const is_list_struct = resolved_obj_type.kind == .Struct and resolved_obj_type.struct_type != null and (std.mem.startsWith(u8, resolved_obj_type.struct_type.?.name, "List_") or std.mem.startsWith(u8, resolved_obj_type.struct_type.?.name, "mantiq_std_collections_List_") or std.mem.eql(u8, resolved_obj_type.struct_type.?.name, "List"));
+                const is_dict_struct = resolved_obj_type.kind == .Struct and resolved_obj_type.struct_type != null and (std.mem.startsWith(u8, resolved_obj_type.struct_type.?.name, "Dict_") or std.mem.startsWith(u8, resolved_obj_type.struct_type.?.name, "mantiq_std_collections_Dict_") or std.mem.eql(u8, resolved_obj_type.struct_type.?.name, "Dict"));
+
+                if (obj_type.kind == .List or is_list_struct) {
                     if (obj_type.payload) |p| {
                         node.inferred_type = p.*;
+                    } else if (resolved_obj_type.payload) |p| {
+                        node.inferred_type = p.*;
+                    } else if (is_list_struct) {
+                        const s_name = resolved_obj_type.struct_type.?.name;
+                        const prefix_idx = if (std.mem.lastIndexOf(u8, s_name, "List_")) |pos| pos + 5 else null;
+                        if (prefix_idx) |pos| {
+                            const sub = s_name[pos..];
+                            node.inferred_type = types.Type{ .kind = types.parseTypeString(sub) };
+                        } else {
+                            node.inferred_type = types.Type{ .kind = .Any };
+                        }
                     } else {
                         node.inferred_type = types.Type{ .kind = .Any };
                     }
-                } else if (obj_type.kind == .Dict) {
+                } else if (obj_type.kind == .Dict or is_dict_struct) {
                     if (obj_type.tuple_types) |tt| {
+                        if (tt.len == 2) {
+                            node.inferred_type = tt[1];
+                        } else {
+                            node.inferred_type = types.Type{ .kind = .Any };
+                        }
+                    } else if (resolved_obj_type.tuple_types) |tt| {
                         if (tt.len == 2) {
                             node.inferred_type = tt[1];
                         } else {

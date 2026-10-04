@@ -292,3 +292,4 @@ fn heap_free_fn(env as ptr, ctx as ptr[u8], ptr_val as ptr[u8], req_size as usiz
 
 fn get_heap_allocator() as Allocator:
     return Allocator(ptr_alloc = heap_alloc_fn, ptr_resize = heap_resize_fn, ptr_free = heap_free_fn, context = None to ptr[u8])
+
